@@ -491,8 +491,21 @@ class GenerationHandler:
 
         task_id = None
         is_first_chunk = True  # Track if this is the first chunk
+        log_id = None  # Initialize log_id
 
         try:
+            # Create initial log entry BEFORE submitting task to upstream
+            # This ensures the log is created even if upstream fails
+            log_id = await self._log_request(
+                token_obj.id,
+                f"generate_{model_config['type']}",
+                {"model": model, "prompt": prompt, "has_image": image is not None},
+                {},  # Empty response initially
+                -1,  # -1 means in-progress
+                -1.0,  # -1.0 means in-progress
+                task_id=None  # Will be updated after task submission
+            )
+
             # Upload image if provided
             media_id = None
             if image:
@@ -573,7 +586,7 @@ class GenerationHandler:
                     media_id=media_id,
                     token_id=token_obj.id
                 )
-            
+
             # Save task to database
             task = Task(
                 task_id=task_id,
@@ -585,16 +598,9 @@ class GenerationHandler:
             )
             await self.db.create_task(task)
 
-            # Create initial log entry (status_code=-1, duration=-1.0 means in-progress)
-            log_id = await self._log_request(
-                token_obj.id,
-                f"generate_{model_config['type']}",
-                {"model": model, "prompt": prompt, "has_image": image is not None},
-                {},  # Empty response initially
-                -1,  # -1 means in-progress
-                -1.0,  # -1.0 means in-progress
-                task_id=task_id
-            )
+            # Update log entry with task_id now that we have it
+            if log_id:
+                await self.db.update_request_log_task_id(log_id, task_id)
 
             # Record usage
             await self.token_manager.record_usage(token_obj.id, is_video=is_video)
@@ -786,6 +792,9 @@ class GenerationHandler:
                             # Update last_progress for tracking
                             last_progress = progress_pct
                             status = task.get("status", "processing")
+
+                            # Update database with current progress
+                            await self.db.update_task(task_id, "processing", progress_pct)
 
                             # Output status every 30 seconds (not just when progress changes)
                             current_time = time.time()

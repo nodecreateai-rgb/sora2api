@@ -147,7 +147,13 @@ class UpdateWatermarkFreeConfigRequest(BaseModel):
     watermark_free_enabled: bool
     parse_method: Optional[str] = "third_party"  # "third_party" or "custom"
     custom_parse_url: Optional[str] = None
-    custom_parse_token: Optional[str] = None
+
+class BatchDisableRequest(BaseModel):
+    token_ids: List[int]
+
+class BatchUpdateProxyRequest(BaseModel):
+    token_ids: List[int]
+    proxy_url: Optional[str] = None
 
 # Auth endpoints
 @router.post("/api/login", response_model=LoginResponse)
@@ -317,7 +323,7 @@ async def disable_token(token_id: int, token: str = Depends(verify_admin_token))
 
 @router.post("/api/tokens/{token_id}/test")
 async def test_token(token_id: int, token: str = Depends(verify_admin_token)):
-    """Test if a token is valid and refresh Sora2 info"""
+    """Test if a token is valid"""
     try:
         result = await token_manager.test_token(token_id)
         response = {
@@ -327,16 +333,6 @@ async def test_token(token_id: int, token: str = Depends(verify_admin_token)):
             "email": result.get("email"),
             "username": result.get("username")
         }
-
-        # Include Sora2 info if available
-        if result.get("valid"):
-            response.update({
-                "sora2_supported": result.get("sora2_supported"),
-                "sora2_invite_code": result.get("sora2_invite_code"),
-                "sora2_redeemed_count": result.get("sora2_redeemed_count"),
-                "sora2_total_count": result.get("sora2_total_count"),
-                "sora2_remaining_count": result.get("sora2_remaining_count")
-            })
 
         return response
     except Exception as e:
@@ -352,10 +348,20 @@ async def delete_token(token_id: int, token: str = Depends(verify_admin_token)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/api/tokens/batch/test-update")
-async def batch_test_update(token: str = Depends(verify_admin_token)):
-    """Test and update all tokens by fetching their status from upstream"""
+async def batch_test_update(request: BatchDisableRequest = None, token: str = Depends(verify_admin_token)):
+    """Test and update selected tokens or all tokens by fetching their status from upstream"""
     try:
-        tokens = await db.get_all_tokens()
+        if request and request.token_ids:
+            # Test only selected tokens
+            tokens = []
+            for token_id in request.token_ids:
+                token_obj = await db.get_token(token_id)
+                if token_obj:
+                    tokens.append(token_obj)
+        else:
+            # Test all tokens (backward compatibility)
+            tokens = await db.get_all_tokens()
+
         success_count = 0
         failed_count = 0
         results = []
@@ -385,41 +391,92 @@ async def batch_test_update(token: str = Depends(verify_admin_token)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/api/tokens/batch/enable-all")
-async def batch_enable_all(token: str = Depends(verify_admin_token)):
-    """Enable all disabled tokens"""
+async def batch_enable_all(request: BatchDisableRequest = None, token: str = Depends(verify_admin_token)):
+    """Enable selected tokens or all disabled tokens"""
     try:
-        tokens = await db.get_all_tokens()
-        enabled_count = 0
-
-        for token_obj in tokens:
-            if not token_obj.is_active:
-                await token_manager.enable_token(token_obj.id)
+        if request and request.token_ids:
+            # Enable only selected tokens
+            enabled_count = 0
+            for token_id in request.token_ids:
+                await token_manager.enable_token(token_id)
                 enabled_count += 1
+        else:
+            # Enable all disabled tokens (backward compatibility)
+            tokens = await db.get_all_tokens()
+            enabled_count = 0
+            for token_obj in tokens:
+                if not token_obj.is_active:
+                    await token_manager.enable_token(token_obj.id)
+                    enabled_count += 1
 
         return {
             "success": True,
-            "message": f"已启用 {enabled_count} 个禁用的Token",
+            "message": f"已启用 {enabled_count} 个Token",
             "enabled_count": enabled_count
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/api/tokens/batch/delete-disabled")
-async def batch_delete_disabled(token: str = Depends(verify_admin_token)):
-    """Delete all disabled tokens"""
+async def batch_delete_disabled(request: BatchDisableRequest = None, token: str = Depends(verify_admin_token)):
+    """Delete selected tokens or all disabled tokens"""
     try:
-        tokens = await db.get_all_tokens()
-        deleted_count = 0
-
-        for token_obj in tokens:
-            if not token_obj.is_active:
-                await token_manager.delete_token(token_obj.id)
+        if request and request.token_ids:
+            # Delete only selected tokens
+            deleted_count = 0
+            for token_id in request.token_ids:
+                await token_manager.delete_token(token_id)
                 deleted_count += 1
+        else:
+            # Delete all disabled tokens (backward compatibility)
+            tokens = await db.get_all_tokens()
+            deleted_count = 0
+            for token_obj in tokens:
+                if not token_obj.is_active:
+                    await token_manager.delete_token(token_obj.id)
+                    deleted_count += 1
 
         return {
             "success": True,
-            "message": f"已删除 {deleted_count} 个禁用的Token",
+            "message": f"已删除 {deleted_count} 个Token",
             "deleted_count": deleted_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/tokens/batch/disable-selected")
+async def batch_disable_selected(request: BatchDisableRequest, token: str = Depends(verify_admin_token)):
+    """Disable selected tokens"""
+    try:
+        disabled_count = 0
+        for token_id in request.token_ids:
+            await token_manager.disable_token(token_id)
+            disabled_count += 1
+
+        return {
+            "success": True,
+            "message": f"已禁用 {disabled_count} 个Token",
+            "disabled_count": disabled_count
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/tokens/batch/update-proxy")
+async def batch_update_proxy(request: BatchUpdateProxyRequest, token: str = Depends(verify_admin_token)):
+    """Batch update proxy for selected tokens"""
+    try:
+        updated_count = 0
+        for token_id in request.token_ids:
+            await token_manager.update_token(
+                token_id=token_id,
+                proxy_url=request.proxy_url
+            )
+            updated_count += 1
+
+        return {
+            "success": True,
+            "message": f"已更新 {updated_count} 个Token的代理",
+            "updated_count": updated_count
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -800,65 +857,6 @@ async def get_stats(token: str = Depends(verify_admin_token)):
         "total_errors": total_errors,
         "today_errors": today_errors
     }
-
-# Sora2 endpoints
-@router.post("/api/tokens/{token_id}/sora2/activate")
-async def activate_sora2(
-    token_id: int,
-    invite_code: str,
-    token: str = Depends(verify_admin_token)
-):
-    """Activate Sora2 with invite code"""
-    try:
-        # Get token
-        token_obj = await db.get_token(token_id)
-        if not token_obj:
-            raise HTTPException(status_code=404, detail="Token not found")
-
-        # Activate Sora2
-        result = await token_manager.activate_sora2_invite(token_obj.token, invite_code)
-
-        if result.get("success"):
-            # Get new invite code after activation
-            sora2_info = await token_manager.get_sora2_invite_code(token_obj.token, token_id)
-
-            # Get remaining count
-            sora2_remaining_count = 0
-            try:
-                remaining_info = await token_manager.get_sora2_remaining_count(token_obj.token, token_id)
-                if remaining_info.get("success"):
-                    sora2_remaining_count = remaining_info.get("remaining_count", 0)
-            except Exception as e:
-                print(f"Failed to get Sora2 remaining count: {e}")
-
-            # Update database
-            await db.update_token_sora2(
-                token_id,
-                supported=True,
-                invite_code=sora2_info.get("invite_code"),
-                redeemed_count=sora2_info.get("redeemed_count", 0),
-                total_count=sora2_info.get("total_count", 0),
-                remaining_count=sora2_remaining_count
-            )
-
-            return {
-                "success": True,
-                "message": "Sora2 activated successfully",
-                "already_accepted": result.get("already_accepted", False),
-                "invite_code": sora2_info.get("invite_code"),
-                "redeemed_count": sora2_info.get("redeemed_count", 0),
-                "total_count": sora2_info.get("total_count", 0),
-                "sora2_remaining_count": sora2_remaining_count
-            }
-        else:
-            return {
-                "success": False,
-                "message": "Failed to activate Sora2"
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to activate Sora2: {str(e)}")
 
 # Logs endpoints
 @router.get("/api/logs")

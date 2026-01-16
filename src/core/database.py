@@ -917,7 +917,17 @@ class Database:
                 query = f"UPDATE request_logs SET {', '.join(updates)} WHERE id = ?"
                 await db.execute(query, params)
                 await db.commit()
-    
+
+    async def update_request_log_task_id(self, log_id: int, task_id: str):
+        """Update request log with task_id"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE request_logs
+                SET task_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (task_id, log_id))
+            await db.commit()
+
     async def get_recent_logs(self, limit: int = 100) -> List[dict]:
         """Get recent logs with token email"""
         async with aiosqlite.connect(self.db_path) as db:
