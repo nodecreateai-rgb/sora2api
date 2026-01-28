@@ -390,6 +390,26 @@
                     </div>
                 </div>
 
+                <!-- POW代理配置 -->
+                <div class="rounded-lg border border-border bg-background p-6">
+                    <h3 class="text-lg font-semibold mb-4">POW代理配置</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="cfgPowProxyEnabled" class="h-4 w-4 rounded border-input">
+                                <span class="text-sm font-medium">启用POW代理</span>
+                            </label>
+                            <p class="text-xs text-muted-foreground mt-1">获取 Sentinel Token 时使用的代理</p>
+                        </div>
+                        <div>
+                            <label class="text-sm font-medium mb-2 block">POW代理地址</label>
+                            <input id="cfgPowProxyUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="http://127.0.0.1:7890">
+                            <p class="text-xs text-muted-foreground mt-1">用于获取 POW Token 的代理地址</p>
+                        </div>
+                        <button onclick="savePowProxyConfig()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 w-full">保存配置</button>
+                    </div>
+                </div>
+
                 <!-- 错误处理配置 -->
                 <div class="rounded-lg border border-border bg-background p-6">
                     <h3 class="text-lg font-semibold mb-4">错误处理配置</h3>
@@ -1098,7 +1118,9 @@
         deleteCharacter=async(id)=>{if(!confirm('确定要删除这个角色卡吗?'))return;try{const r=await apiRequest(`/api/characters/${id}`,{method:'DELETE'});if(!r)return;const d=await r.json();if(d.success){showToast('删除成功','success');await loadCharacters()}else{showToast('删除失败','error')}}catch(e){showToast('删除失败: '+e.message,'error')}},
         loadCallLogicConfig=async()=>{try{const r=await apiRequest('/api/call-logic/config');if(!r)return;const d=await r.json();if(d.success&&d.config){const mode=d.config.call_mode||((d.config.polling_mode_enabled||false)?'polling':'default');$('cfgCallLogicMode').value=mode}else{console.error('调用逻辑配置数据格式错误:',d)}}catch(e){console.error('加载调用逻辑配置失败:',e)}},
         saveCallLogicConfig=async()=>{try{const mode=$('cfgCallLogicMode').value||'default';const r=await apiRequest('/api/call-logic/config',{method:'POST',body:JSON.stringify({call_mode:mode})});if(!r)return;const d=await r.json();if(d.success){showToast('调用逻辑配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
-        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings','logs','generate'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});if(t==='settings'){loadAdminConfig();loadProxyConfig();loadWatermarkFreeConfig();loadCacheConfig();loadGenerationTimeout();loadATAutoRefreshConfig();loadCallLogicConfig()}else if(t==='logs'){loadLogs()}};
+        loadPowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgPowProxyEnabled').checked=d.config.pow_proxy_enabled||false;$('cfgPowProxyUrl').value=d.config.pow_proxy_url||''}else{console.error('POW代理配置数据格式错误:',d)}}catch(e){console.error('加载POW代理配置失败:',e)}},
+        savePowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config',{method:'POST',body:JSON.stringify({pow_proxy_enabled:$('cfgPowProxyEnabled').checked,pow_proxy_url:$('cfgPowProxyUrl').value.trim()})});if(!r)return;const d=await r.json();if(d.success){showToast('POW代理配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
+        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings','logs','generate'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});if(t==='settings'){loadAdminConfig();loadProxyConfig();loadPowProxyConfig();loadWatermarkFreeConfig();loadCacheConfig();loadGenerationTimeout();loadATAutoRefreshConfig();loadCallLogicConfig()}else if(t==='logs'){loadLogs()}};
         // 自适应生成面板 iframe 高度
         window.addEventListener('message', (event) => {
             const data = event.data || {};

@@ -167,6 +167,10 @@ class UpdateCallLogicConfigRequest(BaseModel):
     call_mode: Optional[str] = None  # "default" or "polling"
     polling_mode_enabled: Optional[bool] = None  # Legacy support
 
+class UpdatePowProxyConfigRequest(BaseModel):
+    pow_proxy_enabled: bool
+    pow_proxy_url: Optional[str] = None
+
 class BatchDisableRequest(BaseModel):
     token_ids: List[int]
 
@@ -1368,6 +1372,36 @@ async def update_call_logic_config(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update call logic configuration: {str(e)}")
+
+# POW proxy config endpoints
+@router.get("/api/pow-proxy/config")
+async def get_pow_proxy_config(token: str = Depends(verify_admin_token)) -> dict:
+    """Get POW proxy configuration"""
+    config_obj = await db.get_pow_proxy_config()
+    return {
+        "success": True,
+        "config": {
+            "pow_proxy_enabled": config_obj.pow_proxy_enabled,
+            "pow_proxy_url": config_obj.pow_proxy_url or ""
+        }
+    }
+
+@router.post("/api/pow-proxy/config")
+async def update_pow_proxy_config(
+    request: UpdatePowProxyConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update POW proxy configuration"""
+    try:
+        await db.update_pow_proxy_config(request.pow_proxy_enabled, request.pow_proxy_url)
+        config.set_pow_proxy_enabled(request.pow_proxy_enabled)
+        config.set_pow_proxy_url(request.pow_proxy_url or "")
+        return {
+            "success": True,
+            "message": "POW proxy configuration updated"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update POW proxy configuration: {str(e)}")
 
 # Task management endpoints
 @router.post("/api/tasks/{task_id}/cancel")

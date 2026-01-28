@@ -146,6 +146,14 @@ class CallLogicConfig(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class PowProxyConfig(BaseModel):
+    """POW proxy configuration"""
+    id: int = 1
+    pow_proxy_enabled: bool = False  # Whether to enable POW proxy
+    pow_proxy_url: Optional[str] = None  # POW proxy URL (e.g., http://127.0.0.1:7890)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
 # API Request/Response models
 class ChatMessage(BaseModel):
     role: str

@@ -346,9 +346,29 @@ class Database:
 
             await conn.execute("""
                 INSERT INTO call_logic_config (id, call_mode, polling_mode_enabled)
-                VALUES (1, $1, $2)
-                ON CONFLICT (id) DO NOTHING
-            """, call_mode, polling_mode_enabled)
+                VALUES (1, ?, ?)
+            """, (call_mode, polling_mode_enabled))
+
+        # Ensure pow_proxy_config has a row
+        cursor = await db.execute("SELECT COUNT(*) FROM pow_proxy_config")
+        count = await cursor.fetchone()
+        if count[0] == 0:
+            # Get POW proxy config from config_dict if provided, otherwise use defaults
+            pow_proxy_enabled = False
+            pow_proxy_url = None
+
+            if config_dict:
+                pow_proxy_config = config_dict.get("pow_proxy", {})
+                pow_proxy_enabled = pow_proxy_config.get("pow_proxy_enabled", False)
+                pow_proxy_url = pow_proxy_config.get("pow_proxy_url", "")
+                # Convert empty string to None
+                pow_proxy_url = pow_proxy_url if pow_proxy_url else None
+
+            await db.execute("""
+                INSERT INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url)
+                VALUES (1, ?, ?)
+            """, (pow_proxy_enabled, pow_proxy_url))
+
 
     async def check_and_migrate_db(self, config_dict: dict = None):
         """Check database integrity and perform migrations if needed
@@ -365,11 +385,219 @@ class Database:
 
     async def init_db(self):
         """Initialize database tables - creates all tables and ensures data integrity"""
-        pool = await self._get_pool()
-        async with pool.acquire() as conn:
-            # Note: Tables should be created using schema.sql
-            # This method just ensures config rows exist
-            await self._ensure_config_rows(conn, config_dict=None)
+        async with aiosqlite.connect(self.db_path) as db:
+            # Tokens table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token TEXT UNIQUE NOT NULL,
+                    email TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    st TEXT,
+                    rt TEXT,
+                    client_id TEXT,
+                    proxy_url TEXT,
+                    remark TEXT,
+                    expiry_time TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    cooled_until TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TIMESTAMP,
+                    use_count INTEGER DEFAULT 0,
+                    plan_type TEXT,
+                    plan_title TEXT,
+                    subscription_end TIMESTAMP,
+                    sora2_supported BOOLEAN,
+                    sora2_invite_code TEXT,
+                    sora2_redeemed_count INTEGER DEFAULT 0,
+                    sora2_total_count INTEGER DEFAULT 0,
+                    sora2_remaining_count INTEGER DEFAULT 0,
+                    sora2_cooldown_until TIMESTAMP,
+                    image_enabled BOOLEAN DEFAULT 1,
+                    video_enabled BOOLEAN DEFAULT 1,
+                    image_concurrency INTEGER DEFAULT -1,
+                    video_concurrency INTEGER DEFAULT -1,
+                    is_expired BOOLEAN DEFAULT 0
+                )
+            """)
+
+            # Token stats table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS token_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER NOT NULL,
+                    image_count INTEGER DEFAULT 0,
+                    video_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    last_error_at TIMESTAMP,
+                    today_image_count INTEGER DEFAULT 0,
+                    today_video_count INTEGER DEFAULT 0,
+                    today_error_count INTEGER DEFAULT 0,
+                    today_date DATE,
+                    consecutive_error_count INTEGER DEFAULT 0,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
+            # Tasks table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT UNIQUE NOT NULL,
+                    token_id INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'processing',
+                    progress FLOAT DEFAULT 0,
+                    result_urls TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
+            # Request logs table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS request_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    token_id INTEGER,
+                    task_id TEXT,
+                    operation TEXT NOT NULL,
+                    request_body TEXT,
+                    response_body TEXT,
+                    status_code INTEGER NOT NULL,
+                    duration FLOAT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP,
+                    FOREIGN KEY (token_id) REFERENCES tokens(id)
+                )
+            """)
+
+            # Admin config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS admin_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    admin_username TEXT DEFAULT 'admin',
+                    admin_password TEXT DEFAULT 'admin',
+                    api_key TEXT DEFAULT 'han1234',
+                    error_ban_threshold INTEGER DEFAULT 3,
+                    task_retry_enabled BOOLEAN DEFAULT 1,
+                    task_max_retries INTEGER DEFAULT 3,
+                    auto_disable_on_401 BOOLEAN DEFAULT 1,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Proxy config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    proxy_enabled BOOLEAN DEFAULT 0,
+                    proxy_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Watermark-free config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS watermark_free_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    watermark_free_enabled BOOLEAN DEFAULT 0,
+                    parse_method TEXT DEFAULT 'third_party',
+                    custom_parse_url TEXT,
+                    custom_parse_token TEXT,
+                    fallback_on_failure BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Cache config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS cache_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    cache_enabled BOOLEAN DEFAULT 0,
+                    cache_timeout INTEGER DEFAULT 600,
+                    cache_base_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Generation config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS generation_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    image_timeout INTEGER DEFAULT 300,
+                    video_timeout INTEGER DEFAULT 3000,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Token refresh config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS token_refresh_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    at_auto_refresh_enabled BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Call logic config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS call_logic_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    call_mode TEXT DEFAULT 'default',
+                    polling_mode_enabled BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # POW proxy config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS pow_proxy_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    pow_proxy_enabled BOOLEAN DEFAULT 0,
+                    pow_proxy_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_token_active ON tokens(is_active)")
+
+            # Migration: Add daily statistics columns if they don't exist
+            if not await self._column_exists(db, "token_stats", "today_image_count"):
+                await db.execute("ALTER TABLE token_stats ADD COLUMN today_image_count INTEGER DEFAULT 0")
+            if not await self._column_exists(db, "token_stats", "today_video_count"):
+                await db.execute("ALTER TABLE token_stats ADD COLUMN today_video_count INTEGER DEFAULT 0")
+            if not await self._column_exists(db, "token_stats", "today_error_count"):
+                await db.execute("ALTER TABLE token_stats ADD COLUMN today_error_count INTEGER DEFAULT 0")
+            if not await self._column_exists(db, "token_stats", "today_date"):
+                await db.execute("ALTER TABLE token_stats ADD COLUMN today_date DATE")
+
+            # Migration: Add retry_count column to tasks table if it doesn't exist
+            if not await self._column_exists(db, "tasks", "retry_count"):
+                await db.execute("ALTER TABLE tasks ADD COLUMN retry_count INTEGER DEFAULT 0")
+
+            # Migration: Add task retry config columns to admin_config table if they don't exist
+            if not await self._column_exists(db, "admin_config", "task_retry_enabled"):
+                await db.execute("ALTER TABLE admin_config ADD COLUMN task_retry_enabled BOOLEAN DEFAULT 1")
+            if not await self._column_exists(db, "admin_config", "task_max_retries"):
+                await db.execute("ALTER TABLE admin_config ADD COLUMN task_max_retries INTEGER DEFAULT 3")
+            if not await self._column_exists(db, "admin_config", "auto_disable_on_401"):
+                await db.execute("ALTER TABLE admin_config ADD COLUMN auto_disable_on_401 BOOLEAN DEFAULT 1")
+
+            await db.commit()
 
     async def init_config_from_toml(self, config_dict: dict, is_first_startup: bool = True):
         """
@@ -1161,11 +1389,35 @@ class Database:
 
     async def update_call_logic_config(self, call_mode: str):
         """Update call logic configuration"""
-        pool = await self._get_pool()
-        async with pool.acquire() as conn:
-            polling_mode_enabled = call_mode == "polling"
-            await conn.execute("""
-                UPDATE call_logic_config
-                SET call_mode = $1, polling_mode_enabled = $2, updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """, call_mode, polling_mode_enabled)
+        normalized = "polling" if call_mode == "polling" else "default"
+        polling_mode_enabled = normalized == "polling"
+        async with aiosqlite.connect(self.db_path) as db:
+            # Use INSERT OR REPLACE to ensure the row exists
+            await db.execute("""
+                INSERT OR REPLACE INTO call_logic_config (id, call_mode, polling_mode_enabled, updated_at)
+                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+            """, (normalized, polling_mode_enabled))
+            await db.commit()
+
+    # POW proxy config operations
+    async def get_pow_proxy_config(self) -> "PowProxyConfig":
+        """Get POW proxy configuration"""
+        from .models import PowProxyConfig
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM pow_proxy_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                return PowProxyConfig(**dict(row))
+            return PowProxyConfig(pow_proxy_enabled=False, pow_proxy_url=None)
+
+    async def update_pow_proxy_config(self, pow_proxy_enabled: bool, pow_proxy_url: Optional[str] = None):
+        """Update POW proxy configuration"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Use INSERT OR REPLACE to ensure the row exists
+            await db.execute("""
+                INSERT OR REPLACE INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url, updated_at)
+                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+            """, (pow_proxy_enabled, pow_proxy_url))
+            await db.commit()
+
