@@ -20,10 +20,10 @@ from ..core.config import config
 from ..core.logger import debug_logger
 
 try:
-    from playwright.async_api import async_playwright
-    PLAYWRIGHT_AVAILABLE = True
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
 except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
+    CLOUDSCRAPER_AVAILABLE = False
 
 # PoW related constants
 POW_MAX_ITERATION = 500000
@@ -257,103 +257,67 @@ class SoraClient:
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
 
-    async def _get_sentinel_token_via_browser(self, proxy_url: Optional[str] = None) -> Optional[str]:
-        if not PLAYWRIGHT_AVAILABLE:
-            debug_logger.log_info("[Warning] Playwright not available, cannot use browser fallback")
+    async def _get_sentinel_token_via_cloudscraper(self, proxy_url: Optional[str] = None) -> Optional[str]:
+        if not CLOUDSCRAPER_AVAILABLE:
+            debug_logger.log_info("[Warning] cloudscraper not available, cannot use cloudscraper fallback")
             return None
-        
+
+        req_id = str(uuid4())
+        user_agent = "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        pow_token = self._get_pow_token(user_agent)
+        init_payload = {
+            "p": pow_token,
+            "id": req_id,
+            "flow": "sora_init"
+        }
+        ua_with_pow = f"{user_agent} {json.dumps(init_payload, separators=(',', ':'))}"
+
+        url = f"{self.CHATGPT_BASE_URL}/backend-api/sentinel/req"
+        request_payload = {
+            "p": pow_token,
+            "id": req_id,
+            "flow": "sora_init"
+        }
+        request_body = json.dumps(request_payload, separators=(',', ':'))
+        headers = {
+            "Accept": "*/*",
+            "Content-Type": "text/plain;charset=UTF-8",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/backend-api/sentinel/frame.html",
+            "User-Agent": ua_with_pow,
+            "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="131", "Google Chrome";v="131"',
+            "sec-ch-ua-mobile": "?1",
+            "sec-ch-ua-platform": '"Android"',
+        }
+
+        def _do_request() -> Dict[str, Any]:
+            scraper = cloudscraper.create_scraper()
+            if proxy_url:
+                scraper.proxies = {"http": proxy_url, "https": proxy_url}
+            resp = scraper.post(url, headers=headers, data=request_body, timeout=10)
+            if resp.status_code != 200:
+                raise Exception(f"Sentinel request failed: {resp.status_code} {resp.text}")
+            return resp.json()
+
         try:
-            async with async_playwright() as p:
-                launch_args = {
-                    "headless": True,
-                    "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-                }
-                
-                if proxy_url:
-                    launch_args["proxy"] = {"server": proxy_url}
-                
-                browser = await p.chromium.launch(**launch_args)
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                )
-                
-                page = await context.new_page()
-                
-                debug_logger.log_info(f"[Browser] Navigating to sora.chatgpt.com...")
-                await page.goto("https://sora.chatgpt.com", wait_until="domcontentloaded", timeout=90000)
-                
-                cookies = await context.cookies()
-                device_id = None
-                for cookie in cookies:
-                    if cookie.get("name") == "oai-did":
-                        device_id = cookie.get("value")
-                        break
-                
-                if not device_id:
-                    device_id = str(uuid4())
-                    debug_logger.log_info(f"[Browser] No oai-did cookie, generated: {device_id}")
-                else:
-                    debug_logger.log_info(f"[Browser] Got oai-did from cookie: {device_id}")
-                
-                debug_logger.log_info(f"[Browser] Waiting for SentinelSDK...")
-                for _ in range(120):
-                    try:
-                        sdk_ready = await page.evaluate("() => typeof window.SentinelSDK !== 'undefined'")
-                        if sdk_ready:
-                            break
-                    except:
-                        pass
-                    await asyncio.sleep(0.5)
-                else:
-                    debug_logger.log_info("[Browser] SentinelSDK load timeout")
-                    await browser.close()
-                    return None
-                
-                debug_logger.log_info(f"[Browser] SentinelSDK ready, getting token...")
-                
-                # 尝试获取 token，最多重试 3 次
-                for attempt in range(3):
-                    debug_logger.log_info(f"[Browser] Getting token, attempt {attempt + 1}/3...")
-                    
-                    try:
-                        token = await page.evaluate(
-                            "(deviceId) => window.SentinelSDK.token('sora_2_create_task__auto', deviceId)",
-                            device_id
-                        )
-                        
-                        if token:
-                            debug_logger.log_info(f"[Browser] Token obtained successfully")
-                            await browser.close()
-                            
-                            if isinstance(token, str):
-                                token_data = json.loads(token)
-                            else:
-                                token_data = token
-                            
-                            if "id" not in token_data or not token_data.get("id"):
-                                token_data["id"] = device_id
-                            
-                            return json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
-                        else:
-                            debug_logger.log_info(f"[Browser] Token is empty")
-                            
-                    except Exception as e:
-                        debug_logger.log_info(f"[Browser] Token exception: {str(e)}")
-                    
-                    if attempt < 2:
-                        await asyncio.sleep(2)
-                
-                await browser.close()
-                return None
-                
+            resp = await asyncio.to_thread(_do_request)
+            debug_logger.log_info(
+                f"[Cloudscraper] Sentinel response: turnstile.dx={bool(resp.get('turnstile', {}).get('dx'))}, "
+                f"token={bool(resp.get('token'))}, pow_required={resp.get('proofofwork', {}).get('required')}"
+            )
         except Exception as e:
             debug_logger.log_error(
-                error_message=f"Browser sentinel token failed: {str(e)}",
+                error_message=f"Cloudscraper sentinel token failed: {str(e)}",
                 status_code=0,
                 response_text=str(e),
                 source="Server"
             )
             return None
+
+        sentinel_token = self._build_sentinel_token(
+            self.SENTINEL_FLOW, req_id, pow_token, resp, user_agent
+        )
+        return sentinel_token
 
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
                                 proxy_url: Optional[str], token_id: Optional[int] = None,
@@ -390,18 +354,18 @@ class SoraClient:
             )
             
             if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
-                debug_logger.log_info("Attempting browser fallback for sentinel token...")
-                
-                browser_token = await self._get_sentinel_token_via_browser(proxy_url)
-                
-                if browser_token:
-                    debug_logger.log_info("Got sentinel token from browser, retrying nf/create...")
-                    
-                    browser_data = json.loads(browser_token)
-                    browser_device_id = browser_data.get("id", device_id)
+                debug_logger.log_info("Attempting cloudscraper fallback for sentinel token...")
 
-                    headers["OpenAI-Sentinel-Token"] = browser_token
-                    headers["OAI-Device-Id"] = browser_device_id
+                scraper_token = await self._get_sentinel_token_via_cloudscraper(proxy_url)
+
+                if scraper_token:
+                    debug_logger.log_info("Got sentinel token from cloudscraper, retrying nf/create...")
+
+                    scraper_data = json.loads(scraper_token)
+                    scraper_device_id = scraper_data.get("id", device_id)
+
+                    headers["OpenAI-Sentinel-Token"] = scraper_token
+                    headers["OAI-Device-Id"] = scraper_device_id
                     
                     result = await asyncio.to_thread(
                         self._post_json_sync, url, headers, payload, 30, proxy_url
@@ -432,7 +396,8 @@ class SoraClient:
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
 
-    async def _generate_sentinel_token(self, token: Optional[str] = None, user_agent: Optional[str] = None) -> Tuple[str, str]:
+    async def _generate_sentinel_token(self, token: Optional[str] = None, user_agent: Optional[str] = None,
+                                      proxy_url: Optional[str] = None) -> Tuple[str, str]:
         """Generate openai-sentinel-token by calling /backend-api/sentinel/req and solving PoW"""
         req_id = str(uuid4())
         if not user_agent:
@@ -447,7 +412,8 @@ class SoraClient:
         }
         ua_with_pow = f"{user_agent} {json.dumps(init_payload, separators=(',', ':'))}"
 
-        proxy_url = await self.proxy_manager.get_proxy_url()
+        if not proxy_url:
+            proxy_url = await self.proxy_manager.get_proxy_url()
 
         # Request sentinel/req endpoint
         url = f"{self.CHATGPT_BASE_URL}/backend-api/sentinel/req"
@@ -590,7 +556,10 @@ class SoraClient:
 
         # 只在生成请求时添加 sentinel token
         if add_sentinel_token:
-            sentinel_token, ua = await self._generate_sentinel_token(token)
+            pow_proxy_url = None
+            if config.pow_proxy_enabled:
+                pow_proxy_url = config.pow_proxy_url or None
+            sentinel_token, ua = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
             headers["openai-sentinel-token"] = sentinel_token
             headers["User-Agent"] = ua
 
@@ -798,12 +767,12 @@ class SoraClient:
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
 
-        sentinel_token = await self._get_sentinel_token_via_browser(pow_proxy_url)
+        sentinel_token = await self._get_sentinel_token_via_cloudscraper(pow_proxy_url)
 
         if not sentinel_token:
-            # 如果浏览器方式失败，回退到手动 POW
-            debug_logger.log_info("[Warning] Browser sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token)
+            # 如果 cloudscraper 方式失败，回退到手动 POW
+            debug_logger.log_info("[Warning] Cloudscraper sentinel token failed, falling back to manual POW")
+            sentinel_token, user_agent = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
         else:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         
