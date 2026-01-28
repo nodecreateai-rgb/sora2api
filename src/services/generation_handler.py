@@ -222,6 +222,7 @@ class GenerationHandler:
         self.load_balancer = load_balancer
         self.db = db
         self.concurrency_manager = concurrency_manager
+        self.proxy_manager = proxy_manager
         self.file_cache = FileCache(
             cache_dir="tmp",
             default_timeout=config.cache_timeout,
@@ -375,7 +376,9 @@ class GenerationHandler:
         """
         from curl_cffi.requests import AsyncSession
 
-        proxy_url = await self.load_balancer.proxy_manager.get_proxy_url()
+        proxy_url = None
+        if self.proxy_manager:
+            proxy_url = await self.proxy_manager.get_proxy_url()
 
         kwargs = {
             "timeout": 30,
