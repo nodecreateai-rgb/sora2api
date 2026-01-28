@@ -21,7 +21,7 @@ aptPkgs = [
     "libgbm1",
     "libpango-1.0-0",
     "libcairo2",
-    "libasound2",
+    "libasound2t64",
     "libatspi2.0-0",
     "libxshmfence1",
     "libnss3",
