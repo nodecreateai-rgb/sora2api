@@ -91,6 +91,110 @@ class Database:
             conn: Database connection
             config_dict: Configuration dictionary from setting.toml (optional)
         """
+        # Ensure config tables exist for Postgres deployments without schema.sql applied
+        if not await self._table_exists(conn, "admin_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    admin_username TEXT DEFAULT 'admin',
+                    admin_password TEXT DEFAULT 'admin',
+                    api_key TEXT DEFAULT 'han1234',
+                    error_ban_threshold INTEGER DEFAULT 3,
+                    task_retry_enabled BOOLEAN DEFAULT TRUE,
+                    task_max_retries INTEGER DEFAULT 3,
+                    auto_disable_on_401 BOOLEAN DEFAULT TRUE,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT admin_config_single_row CHECK (id = 1)
+                )
+            """)
+
+        if not await self._table_exists(conn, "admin_sessions"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_sessions (
+                    token TEXT PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at)
+            """)
+
+        if not await self._table_exists(conn, "proxy_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    proxy_enabled BOOLEAN DEFAULT FALSE,
+                    proxy_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT proxy_config_single_row CHECK (id = 1)
+                )
+            """)
+
+        if not await self._table_exists(conn, "watermark_free_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS watermark_free_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    watermark_free_enabled BOOLEAN DEFAULT FALSE,
+                    parse_method TEXT DEFAULT 'third_party',
+                    custom_parse_url TEXT,
+                    custom_parse_token TEXT,
+                    fallback_on_failure BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT watermark_free_config_single_row CHECK (id = 1)
+                )
+            """)
+
+        if not await self._table_exists(conn, "cache_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS cache_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    cache_enabled BOOLEAN DEFAULT FALSE,
+                    cache_timeout INTEGER DEFAULT 600,
+                    cache_base_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT cache_config_single_row CHECK (id = 1)
+                )
+            """)
+
+        if not await self._table_exists(conn, "generation_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS generation_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    image_timeout INTEGER DEFAULT 300,
+                    video_timeout INTEGER DEFAULT 3000,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT generation_config_single_row CHECK (id = 1)
+                )
+            """)
+
+        if not await self._table_exists(conn, "token_refresh_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS token_refresh_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    at_auto_refresh_enabled BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT token_refresh_config_single_row CHECK (id = 1)
+                )
+            """)
+
+        if not await self._table_exists(conn, "call_logic_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS call_logic_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    call_mode TEXT DEFAULT 'default',
+                    polling_mode_enabled BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT call_logic_config_single_row CHECK (id = 1)
+                )
+            """)
         # Ensure admin_config has a row
         count = await conn.fetchval("SELECT COUNT(*) FROM admin_config")
         if count == 0:
