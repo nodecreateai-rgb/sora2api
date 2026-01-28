@@ -10,41 +10,41 @@ class DebugLogger:
     """Debug logger for API requests and responses"""
     
     def __init__(self):
-        self.log_file = Path("logs.txt")
+        log_path = Path("logs.txt")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_file = log_path
         self._setup_logger()
     
     def _setup_logger(self):
-        """Setup file logger"""
+        """Setup logger with console output"""
         # Clear log file on startup
         if self.log_file.exists():
             self.log_file.unlink()
 
-        # Create logger
         self.logger = logging.getLogger("debug_logger")
         self.logger.setLevel(logging.DEBUG)
 
-        # Remove existing handlers
         self.logger.handlers.clear()
 
-        # Create file handler
+        formatter = logging.Formatter(
+            "%(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+
         file_handler = logging.FileHandler(
             self.log_file,
-            mode='a',
-            encoding='utf-8'
+            mode="a",
+            encoding="utf-8"
         )
         file_handler.setLevel(logging.DEBUG)
-        
-        # Create formatter
-        formatter = logging.Formatter(
-            '%(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
         file_handler.setFormatter(formatter)
-        
-        # Add handler
         self.logger.addHandler(file_handler)
-        
-        # Prevent propagation to root logger
+
         self.logger.propagate = False
     
     def _mask_token(self, token: str) -> str:
