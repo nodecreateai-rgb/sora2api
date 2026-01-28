@@ -31,7 +31,8 @@ aptPkgs = [
     "libxkbcommon0",
     "libx11-6",
     "libxcb1",
-    "libxext6"
+    "libxext6",
+    "xvfb"
 ]
 
 # Install pip first, then install requirements
@@ -46,7 +47,7 @@ cmds = [
 # Start command with directory initialization
 # This ensures data directories exist before starting the application
 [start]
-cmd = "sh -c 'mkdir -p ${DATA_DIR:-/app/data} ${CACHE_DIR:-/app/tmp} && echo \"Data directory: ${DATA_DIR:-/app/data}\" && echo \"Cache directory: ${CACHE_DIR:-/app/tmp}\" && python main.py'"
+cmd = "sh -c 'mkdir -p ${DATA_DIR:-/app/data} ${CACHE_DIR:-/app/tmp} && echo \"Data directory: ${DATA_DIR:-/app/data}\" && echo \"Cache directory: ${CACHE_DIR:-/app/tmp}\" && xvfb-run -a python main.py'"
 
 # Environment variables (can be overridden in Dokploy)
 [env]
