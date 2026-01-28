@@ -1,4 +1,5 @@
 """Configuration management"""
+import os
 import tomli
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -172,6 +173,17 @@ class Config:
         self._config["generation"]["video_timeout"] = timeout
 
     @property
+    def max_retry_attempts(self) -> int:
+        """Get max retry attempts for task submission"""
+        env_value = os.getenv("MAX_RETRY_ATTEMPTS")
+        if env_value is not None:
+            try:
+                return int(env_value)
+            except ValueError:
+                pass
+        return self._config.get("generation", {}).get("max_retry_attempts", 3)
+
+    @property
     def watermark_free_enabled(self) -> bool:
         """Get watermark-free mode enabled status"""
         return self._config.get("watermark_free", {}).get("watermark_free_enabled", False)
@@ -216,6 +228,13 @@ class Config:
     @property
     def call_logic_mode(self) -> str:
         """Get call logic mode (default or polling)"""
+        env_mode = os.getenv("LOAD_BALANCER_MODE")
+        if env_mode:
+            normalized = env_mode.strip().lower()
+            if normalized in ("polling", "round-robin", "round_robin", "roundrobin"):
+                return "polling"
+            if normalized in ("default", "random"):
+                return "default"
         call_logic = self._config.get("call_logic", {})
         mode = call_logic.get("call_mode")
         if mode in ("default", "polling"):

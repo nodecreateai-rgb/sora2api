@@ -28,6 +28,7 @@ base_url = "http://127.0.0.1:8000"
 [generation]
 image_timeout = 300
 video_timeout = 3000
+max_retry_attempts = 3
 
 [admin]
 error_ban_threshold = 3

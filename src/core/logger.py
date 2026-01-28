@@ -257,6 +257,38 @@ class DebugLogger:
 
         except Exception as e:
             self.logger.error(f"Error logging error: {e}")
+
+    def log_api_error(
+        self,
+        path: str,
+        error_message: str,
+        status_code: Optional[int] = None,
+        client_ip: Optional[str] = None,
+        traceback_str: Optional[str] = None
+    ):
+        """Log API error - always logs regardless of debug_enabled"""
+        try:
+            self._write_separator()
+            self.logger.info(f"🔴 [API ERROR] {self._format_timestamp()}")
+            self._write_separator("-")
+
+            self.logger.info(f"Path: {path}")
+            if client_ip:
+                self.logger.info(f"Client IP: {client_ip}")
+            if status_code:
+                self.logger.info(f"Status Code: {status_code}")
+
+            self.logger.info(f"Error Message: {error_message}")
+
+            if traceback_str:
+                self.logger.info("\n📋 Traceback:")
+                self.logger.info(traceback_str)
+
+            self._write_separator()
+            self.logger.info("")  # Empty line
+
+        except Exception as e:
+            self.logger.error(f"Error logging API error: {e}")
     
     def log_info(self, message: str):
         """Log general info message to log.txt"""
@@ -272,4 +304,3 @@ class DebugLogger:
 
 # Global debug logger instance
 debug_logger = DebugLogger()
-

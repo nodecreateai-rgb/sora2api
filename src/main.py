@@ -63,8 +63,14 @@ static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Cache files (tmp directory)
-tmp_dir = Path(__file__).parent.parent / "tmp"
-tmp_dir.mkdir(exist_ok=True)
+import os
+cache_dir_env = os.getenv("CACHE_DIR", None)
+if cache_dir_env:
+    tmp_dir = Path(cache_dir_env)
+else:
+    tmp_dir = Path(__file__).parent.parent / "tmp"
+
+tmp_dir.mkdir(exist_ok=True, parents=True)
 app.mount("/tmp", StaticFiles(directory=str(tmp_dir)), name="tmp")
 
 # Frontend routes
@@ -99,14 +105,11 @@ async def startup_event():
     # Get config from setting.toml
     config_dict = config.get_raw_config()
 
-    # Check if database exists
-    is_first_startup = not db.db_exists()
-
     # Initialize database tables
     await db.init_db()
 
     # Handle database initialization based on startup type
-    if is_first_startup:
+    if await db._is_first_startup():
         print("🎉 First startup detected. Initializing database and configuration from setting.toml...")
         await db.init_config_from_toml(config_dict, is_first_startup=True)
         print("✓ Database and configuration initialized successfully.")
@@ -172,6 +175,7 @@ async def shutdown_event():
     await generation_handler.file_cache.stop_cleanup_task()
     if scheduler.running:
         scheduler.shutdown()
+    await db.close()
 
 if __name__ == "__main__":
     uvicorn.run(

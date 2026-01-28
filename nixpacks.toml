@@ -1,0 +1,29 @@
+# Nixpacks configuration for Dokploy deployment
+# This file configures the build process for Nixpacks
+
+# Use Nixpacks auto-detection for Python projects
+# Nixpacks will automatically detect Python and install dependencies
+
+[phases.setup]
+nixPkgs = ["python311"]
+
+# Install pip first, then install requirements
+[phases.install]
+cmds = [
+    "python -m venv --copies /opt/venv",
+    "/opt/venv/bin/pip install -r requirements.txt"
+]
+
+# Start command with directory initialization
+# This ensures data directories exist before starting the application
+[start]
+cmd = "sh -c 'mkdir -p ${DATA_DIR:-/app/data} ${CACHE_DIR:-/app/tmp} && echo \"Data directory: ${DATA_DIR:-/app/data}\" && echo \"Cache directory: ${CACHE_DIR:-/app/tmp}\" && python main.py'"
+
+# Environment variables (can be overridden in Dokploy)
+[env]
+PYTHONUNBUFFERED = "1"
+# DATA_DIR and CACHE_DIR should be set in Dokploy to point to persistent volumes
+# Example: DATA_DIR=/app/data, CACHE_DIR=/app/tmp
+# If not set, defaults to /app/data and /app/tmp
+DATA_DIR = "/app/data"
+CACHE_DIR = "/app/tmp"

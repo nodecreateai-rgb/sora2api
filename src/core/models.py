@@ -1,6 +1,6 @@
 """Data models"""
 from datetime import datetime
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel
 
 class Token(BaseModel):
@@ -172,3 +172,80 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: List[ChatCompletionChoice]
+
+# New API Request Models
+class ImageGenerateRequest(BaseModel):
+    """文生图请求"""
+    prompt: str
+    model: str = "gpt-image"  # gpt-image, gpt-image-landscape, gpt-image-portrait
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果
+
+class ImageTransformRequest(BaseModel):
+    """图生图请求"""
+    prompt: str
+    image: str  # Base64 encoded image
+    model: str = "gpt-image"  # gpt-image, gpt-image-landscape, gpt-image-portrait
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果
+
+class VideoGenerateRequest(BaseModel):
+    """文生视频请求"""
+    prompt: str
+    model: str = "sora2-landscape-10s"  # sora2-* models
+    style: Optional[str] = None  # 风格ID，如 anime, retro 等
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果
+
+class VideoTransformRequest(BaseModel):
+    """图生视频请求"""
+    prompt: str
+    image: str  # Base64 encoded image
+    model: str = "sora2-landscape-10s"  # sora2-* models
+    style: Optional[str] = None  # 风格ID，如 anime, retro 等
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果
+
+class VideoRemixRequest(BaseModel):
+    """Remix 视频请求"""
+    prompt: str
+    remix_target_id: str  # Sora share link video ID (s_xxx)
+    model: str = "sora2-landscape-10s"  # sora2-* models
+    style: Optional[str] = None  # 风格ID，如 anime, retro 等
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果
+
+class VideoStoryboardRequest(BaseModel):
+    """视频分镜请求"""
+    prompt: str  # 分镜格式：```[时长s]提示词``` 或 [时长s]提示词
+    model: str = "sora2-landscape-10s"  # sora2-* models
+    style: Optional[str] = None  # 风格ID，如 anime, retro 等
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果
+
+class CharacterCreateRequest(BaseModel):
+    """创建角色请求"""
+    video: str  # Base64 encoded video or video URL
+    stream: bool = False
+    async_mode: bool = False  # 异步模式：立即返回task_id，不等待结果，通过 /v1/tasks/{task_id} 查询状态
+    timestamps: Optional[str] = "0,3"  # 视频时间戳，格式如 "0,3" 表示从0秒到3秒
+
+class CharacterGenerateRequest(BaseModel):
+    """角色生成视频请求"""
+    prompt: str
+    video: str  # Base64 encoded video or video URL
+    model: str = "sora2-landscape-10s"  # sora2-* models
+    stream: bool = False
+    timestamps: Optional[str] = "0,3"  # 视频时间戳，格式如 "0,3" 表示从0秒到3秒
+
+class TaskStatusResponse(BaseModel):
+    """任务状态响应"""
+    task_id: str
+    status: str  # processing/completed/failed
+    progress: float  # 0.0-100.0
+    model: str
+    prompt: str
+    result_urls: Optional[Union[List[str], Dict[str, Any]]] = None  # 结果URL列表或角色信息字典
+    error_message: Optional[str] = None  # 错误信息（如果有）
+    created_at: Optional[str] = None  # ISO格式时间戳
+    completed_at: Optional[str] = None  # ISO格式时间戳

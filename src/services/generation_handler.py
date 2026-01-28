@@ -5,7 +5,8 @@ import base64
 import time
 import random
 import re
-from typing import Optional, AsyncGenerator, Dict, Any
+import uuid
+from typing import Optional, AsyncGenerator, Dict, Any, Tuple
 from datetime import datetime
 from .sora_client import SoraClient
 from .token_manager import TokenManager
@@ -402,6 +403,360 @@ class GenerationHandler:
         """
         token_obj = await self.load_balancer.select_token(for_image_generation=is_image, for_video_generation=is_video)
         return token_obj is not None
+
+    async def submit_generation_task(self, model: str, prompt: str,
+                                     image: Optional[str] = None,
+                                     video: Optional[str] = None,
+                                     remix_target_id: Optional[str] = None) -> Tuple[str, str]:
+        """Submit a generation task and return task_id immediately (async mode)
+
+        This method submits the task and starts background polling, but returns immediately
+        with the task_id. The caller can then poll the task status using get_task_status.
+
+        Args:
+            model: Model name
+            prompt: Generation prompt
+            image: Base64 encoded image
+            video: Base64 encoded video or video URL
+            remix_target_id: Sora share link video ID for remix
+
+        Returns:
+            Tuple of (task_id, task_type) where task_type is "image" or "video"
+
+        Raises:
+            Exception: If no available tokens or invalid model
+        """
+        # Validate model
+        if model not in MODEL_CONFIG:
+            raise ValueError(f"Invalid model: {model}")
+
+        model_config = MODEL_CONFIG[model]
+        is_video = model_config["type"] == "video"
+        is_image = model_config["type"] == "image"
+
+        # Validate model type
+        if not is_video and not is_image:
+            raise ValueError(f"Invalid model type for model {model}: {model_config.get('type', 'unknown')}")
+
+        task_type = "video" if is_video else "image"
+
+        max_retries = config.max_retry_attempts
+        last_error = None
+
+        for attempt in range(max_retries):
+            token_obj = None
+            try:
+                require_pro = model_config.get("require_pro", False)
+
+                token_obj = await self.load_balancer.select_token(
+                    for_image_generation=is_image,
+                    for_video_generation=is_video,
+                    require_pro=require_pro
+                )
+                if not token_obj:
+                    if require_pro:
+                        raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
+                    if is_image:
+                        raise Exception("No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired.")
+                    raise Exception("No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
+
+                if is_image:
+                    lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
+                    if not lock_acquired:
+                        raise Exception(f"Failed to acquire lock for token {token_obj.id}")
+
+                    if self.concurrency_manager:
+                        concurrency_acquired = await self.concurrency_manager.acquire_image(token_obj.id)
+                        if not concurrency_acquired:
+                            await self.load_balancer.token_lock.release_lock(token_obj.id)
+                            raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+
+                if is_video and self.concurrency_manager:
+                    concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+                    if not concurrency_acquired:
+                        if is_image:
+                            await self.load_balancer.token_lock.release_lock(token_obj.id)
+                            if self.concurrency_manager:
+                                await self.concurrency_manager.release_image(token_obj.id)
+                        raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+
+                media_id = None
+                if image:
+                    image_data = self._decode_base64_image(image)
+                    media_id = await self.sora_client.upload_image(image_data, token_obj.token)
+
+                if is_video:
+                    n_frames = model_config.get("n_frames", 300)
+                    clean_prompt, style_id = self._extract_style(prompt)
+
+                    if self.sora_client.is_storyboard_prompt(clean_prompt):
+                        formatted_prompt = self.sora_client.format_storyboard_prompt(clean_prompt)
+                        task_id = await self.sora_client.generate_storyboard(
+                            formatted_prompt, token_obj.token,
+                            orientation=model_config["orientation"],
+                            media_id=media_id,
+                            n_frames=n_frames,
+                            style_id=style_id
+                        )
+                    else:
+                        sora_model = model_config.get("model", "sy_8")
+                        video_size = model_config.get("size", "small")
+                        task_id = await self.sora_client.generate_video(
+                            clean_prompt, token_obj.token,
+                            orientation=model_config["orientation"],
+                            media_id=media_id,
+                            n_frames=n_frames,
+                            style_id=style_id,
+                            model=sora_model,
+                            size=video_size,
+                            token_id=token_obj.id
+                        )
+                else:
+                    if "width" not in model_config or "height" not in model_config:
+                        raise ValueError(f"Image model {model} missing width or height configuration")
+
+                    task_id = await self.sora_client.generate_image(
+                        prompt, token_obj.token,
+                        width=model_config["width"],
+                        height=model_config["height"],
+                        media_id=media_id,
+                        token_id=token_obj.id
+                    )
+
+                task = Task(
+                    task_id=task_id,
+                    token_id=token_obj.id,
+                    model=model,
+                    prompt=prompt,
+                    status="processing",
+                    progress=0.0
+                )
+                await self.db.create_task(task)
+
+                await self._log_request(
+                    token_obj.id,
+                    f"generate_{model_config['type']}",
+                    {"model": model, "prompt": prompt, "has_image": image is not None},
+                    {},
+                    -1,
+                    -1.0,
+                    task_id=task_id
+                )
+
+                await self.token_manager.record_usage(token_obj.id, is_video=is_video)
+
+                asyncio.create_task(self._poll_task_result_background(
+                    task_id, token_obj.token, is_video, prompt, token_obj.id
+                ))
+
+                return task_id, task_type
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                if token_obj:
+                    if is_image:
+                        await self.load_balancer.token_lock.release_lock(token_obj.id)
+                        if self.concurrency_manager:
+                            await self.concurrency_manager.release_image(token_obj.id)
+                    if is_video and self.concurrency_manager:
+                        await self.concurrency_manager.release_video(token_obj.id)
+
+                    is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+                    await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
+
+                non_retryable_errors = [
+                    "invalid model",
+                    "no available tokens",
+                    "no available pro tokens",
+                    "content policy violation"
+                ]
+                should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
+
+                if not should_retry:
+                    raise e
+
+                debug_logger.log_info(f"Task submission attempt {attempt + 1} failed: {str(e)}. Retrying...")
+
+                if "heavy_load" in error_str or "under heavy load" in error_str:
+                    wait_time = min(2 ** attempt, 10)
+                    await asyncio.sleep(wait_time)
+
+        if last_error:
+            raise last_error
+
+    async def _poll_task_result_background(self, task_id: str, token: str, is_video: bool,
+                                          prompt: str, token_id: int):
+        """Background task to poll for task results and update database"""
+        try:
+            async for _ in self._poll_task_result(task_id, token, is_video, False, prompt, token_id):
+                pass
+
+            await self.token_manager.record_success(token_id, is_video=is_video)
+
+        except Exception as e:
+            error_str = str(e).lower()
+            is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+            await self.token_manager.record_error(token_id, is_overload=is_overload)
+
+            await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+
+            await self.db.update_request_log_by_task_id(
+                task_id,
+                response_body=json.dumps({"error": str(e), "status": "failed"}),
+                status_code=500,
+                duration=-1.0
+            )
+
+            if not is_video:
+                await self.load_balancer.token_lock.release_lock(token_id)
+                if self.concurrency_manager:
+                    await self.concurrency_manager.release_image(token_id)
+
+            if is_video and self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_id)
+
+            debug_logger.log_error(
+                error_message=f"Background polling failed for task {task_id}: {str(e)}",
+                status_code=500,
+                response_text=str(e)
+            )
+
+    async def submit_character_creation_task(self, video_data: str, timestamps: str = "0,3") -> Tuple[str, str]:
+        """Submit a character creation task and return task_id immediately (async mode)
+
+        This method submits the character creation task and starts background processing,
+        but returns immediately with the task_id. The caller can then poll the task status
+        using get_task_status.
+        """
+        max_retries = config.max_retry_attempts
+        last_error = None
+
+        for attempt in range(max_retries):
+            token_obj = None
+            try:
+                token_obj = await self.load_balancer.select_token(for_video_generation=True)
+                if not token_obj:
+                    raise Exception("No available tokens for character creation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired.")
+
+                if self.concurrency_manager:
+                    concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+                    if not concurrency_acquired:
+                        raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+
+                task_id = f"char_{uuid.uuid4().hex[:16]}"
+                model_config = MODEL_CONFIG["sora2-landscape-10s"]
+
+                try:
+                    task = Task(
+                        task_id=task_id,
+                        token_id=token_obj.id,
+                        model="character-creation",
+                        prompt="",
+                        status="processing",
+                        progress=0.0
+                    )
+                    await self.db.create_task(task)
+                    debug_logger.log_info(f"Character creation task {task_id} created successfully")
+                except Exception as db_error:
+                    error_str = str(db_error).lower()
+                    if "unique" in error_str or "duplicate" in error_str:
+                        existing_task = await self.db.get_task(task_id)
+                        if existing_task:
+                            debug_logger.log_info(f"Task {task_id} already exists, reusing existing task")
+                        else:
+                            debug_logger.log_error(
+                                error_message=f"Unique constraint error but task {task_id} not found: {str(db_error)}",
+                                status_code=500,
+                                response_text=str(db_error)
+                            )
+                            raise Exception(f"Failed to create task in database: {str(db_error)}")
+                    else:
+                        debug_logger.log_error(
+                            error_message=f"Failed to create task {task_id} in database: {str(db_error)}",
+                            status_code=500,
+                            response_text=str(db_error)
+                        )
+                        raise Exception(f"Failed to create task in database: {str(db_error)}")
+
+                try:
+                    await self._log_request(
+                        token_obj.id,
+                        "character_only",
+                        {"type": "character_creation", "has_video": True},
+                        {},
+                        -1,
+                        -1.0,
+                        task_id=task_id
+                    )
+                except Exception as log_error:
+                    debug_logger.log_info(f"Failed to create initial log for task {task_id}: {str(log_error)}")
+
+                try:
+                    await self.token_manager.record_usage(token_obj.id, is_video=True)
+                except Exception as usage_error:
+                    debug_logger.log_info(f"Failed to record usage for task {task_id}: {str(usage_error)}")
+
+                try:
+                    asyncio.create_task(self._handle_character_creation_background(
+                        task_id, video_data, model_config, token_obj.token, token_obj.id, timestamps
+                    ))
+                except Exception as bg_error:
+                    debug_logger.log_error(
+                        error_message=f"Failed to start background task for {task_id}: {str(bg_error)}",
+                        status_code=500,
+                        response_text=str(bg_error)
+                    )
+                    try:
+                        await self.db.update_task(task_id, "failed", 0, error_message=f"Failed to start background task: {str(bg_error)}")
+                    except Exception as update_error:
+                        debug_logger.log_error(
+                            error_message=f"Failed to update task {task_id} status: {str(update_error)}",
+                            status_code=500,
+                            response_text=str(update_error)
+                        )
+
+                return task_id, "character"
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                task_created = False
+                if 'task_id' in locals():
+                    try:
+                        existing_task = await self.db.get_task(task_id)
+                        if existing_task:
+                            task_created = True
+                            debug_logger.log_info(f"Task {task_id} already exists, marking as failed due to error: {str(e)}")
+                            try:
+                                await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+                            except:
+                                pass
+                            return task_id, "character"
+                    except:
+                        pass
+
+                if task_created:
+                    return task_id, "character"
+
+                non_retryable_errors = [
+                    "failed to create task in database"
+                ]
+                should_retry = attempt < max_retries - 1 and not any(err in error_str for err in non_retryable_errors)
+
+                if not should_retry:
+                    raise e
+
+                debug_logger.log_info(f"Character creation task submission attempt {attempt + 1} failed: {str(e)}. Retrying...")
+
+                if "heavy_load" in error_str or "under heavy load" in error_str:
+                    wait_time = min(2 ** attempt, 10)
+                    await asyncio.sleep(wait_time)
+
+        if last_error:
+            raise last_error
 
     async def handle_generation(self, model: str, prompt: str,
                                image: Optional[str] = None,
@@ -1565,7 +1920,133 @@ class GenerationHandler:
 
     # ==================== Character Creation and Remix Handlers ====================
 
-    async def _handle_character_creation_only(self, video_data, model_config: Dict) -> AsyncGenerator[str, None]:
+    async def _handle_character_creation_background(self, task_id: str, video_data: str,
+                                                     model_config: Dict, token: str, token_id: int, timestamps: str = "0,3"):
+        """Background task to handle character creation and update database"""
+        start_time = time.time()
+        try:
+            await self.db.update_task(task_id, "processing", 10.0)
+
+            if isinstance(video_data, str):
+                if video_data.startswith("http://") or video_data.startswith("https://"):
+                    video_bytes = await self._download_file(video_data)
+                else:
+                    video_bytes = base64.b64decode(video_data)
+            else:
+                video_bytes = video_data
+
+            await self.db.update_task(task_id, "processing", 20.0)
+
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token, timestamps)
+            debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
+            await self.db.update_task(task_id, "processing", 30.0)
+
+            cameo_status = await self._poll_cameo_status(cameo_id, token)
+            debug_logger.log_info(f"Cameo status: {cameo_status}")
+            await self.db.update_task(task_id, "processing", 50.0)
+
+            username_hint = cameo_status.get("username_hint", "character")
+            display_name = cameo_status.get("display_name_hint", "Character")
+            username = self._process_character_username(username_hint)
+            await self.db.update_task(task_id, "processing", 60.0)
+
+            profile_asset_url = cameo_status.get("profile_asset_url")
+            if not profile_asset_url:
+                raise Exception("Profile asset URL not found in cameo status")
+
+            avatar_data = await self.sora_client.download_character_image(profile_asset_url)
+            debug_logger.log_info(f"Avatar downloaded, size: {len(avatar_data)} bytes")
+            await self.db.update_task(task_id, "processing", 70.0)
+
+            asset_pointer = await self.sora_client.upload_character_image(avatar_data, token)
+            debug_logger.log_info(f"Avatar uploaded, asset_pointer: {asset_pointer}")
+            await self.db.update_task(task_id, "processing", 80.0)
+
+            instruction_set = cameo_status.get("instruction_set_hint") or cameo_status.get("instruction_set")
+            character_id = await self.sora_client.finalize_character(
+                cameo_id=cameo_id,
+                username=username,
+                display_name=display_name,
+                profile_asset_pointer=asset_pointer,
+                instruction_set=instruction_set,
+                token=token
+            )
+            debug_logger.log_info(f"Character finalized, character_id: {character_id}")
+            await self.db.update_task(task_id, "processing", 90.0)
+
+            await self.sora_client.set_character_public(cameo_id, token)
+            debug_logger.log_info("Character set as public")
+
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": True,
+                    "username": username,
+                    "display_name": display_name,
+                    "character_id": character_id,
+                    "cameo_id": cameo_id
+                },
+                status_code=200,
+                duration=duration,
+                task_id=task_id
+            )
+
+            result_data = {
+                "username": username,
+                "display_name": display_name,
+                "character_id": character_id,
+                "cameo_id": cameo_id
+            }
+            await self.db.update_task(
+                task_id, "completed", 100.0,
+                result_urls=json.dumps(result_data)
+            )
+
+            await self.token_manager.record_success(token_id, is_video=True)
+
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_id)
+
+        except Exception as e:
+            error_str = str(e).lower()
+            is_overload = "heavy_load" in error_str or "under heavy load" in error_str
+            await self.token_manager.record_error(token_id, is_overload=is_overload)
+
+            await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+
+            duration = time.time() - start_time
+            await self._log_request(
+                token_id=token_id,
+                operation="character_only",
+                request_data={
+                    "type": "character_creation",
+                    "has_video": True
+                },
+                response_data={
+                    "success": False,
+                    "error": str(e)
+                },
+                status_code=500,
+                duration=duration,
+                task_id=task_id
+            )
+
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_id)
+
+            debug_logger.log_error(
+                error_message=f"Background character creation failed for task {task_id}: {str(e)}",
+                status_code=500,
+                response_text=str(e)
+            )
+
+    async def _handle_character_creation_only(self, video_data, model_config: Dict, timestamps: str = "0,3") -> AsyncGenerator[str, None]:
         """Handle character creation only (no video generation)
 
         Flow:
@@ -1603,7 +2084,7 @@ class GenerationHandler:
             yield self._format_stream_chunk(
                 reasoning_content="Uploading video file...\n"
             )
-            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token, timestamps)
             debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
 
             # Step 2: Poll for character processing
@@ -1741,7 +2222,7 @@ class GenerationHandler:
             )
             raise
 
-    async def _handle_character_and_video_generation(self, video_data, prompt: str, model_config: Dict) -> AsyncGenerator[str, None]:
+    async def _handle_character_and_video_generation(self, video_data, prompt: str, model_config: Dict, timestamps: str = "0,3") -> AsyncGenerator[str, None]:
         """Handle character creation and video generation
 
         Flow:
@@ -1784,7 +2265,7 @@ class GenerationHandler:
             yield self._format_stream_chunk(
                 reasoning_content="Uploading video file...\n"
             )
-            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+            cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token, timestamps)
             debug_logger.log_info(f"Video uploaded, cameo_id: {cameo_id}")
 
             # Step 2: Poll for character processing

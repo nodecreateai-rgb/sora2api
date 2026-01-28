@@ -775,12 +775,13 @@ class SoraClient:
 
     # ==================== Character Creation Methods ====================
 
-    async def upload_character_video(self, video_data: bytes, token: str) -> str:
+    async def upload_character_video(self, video_data: bytes, token: str, timestamps: str = "0,3") -> str:
         """Upload character video and return cameo_id
 
         Args:
             video_data: Video file bytes
             token: Access token
+            timestamps: Video timestamps in format "start,end"
 
         Returns:
             cameo_id
@@ -794,7 +795,7 @@ class SoraClient:
         )
         mp.addpart(
             name="timestamps",
-            data=b"0,3"
+            data=timestamps.encode("utf-8")
         )
 
         result = await self._make_request("POST", "/characters/upload", token, multipart=mp)
