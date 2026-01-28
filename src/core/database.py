@@ -4,7 +4,7 @@ import json
 from datetime import datetime, date
 from typing import Optional, List
 from urllib.parse import urlparse
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CallLogicConfig
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CallLogicConfig, PowProxyConfig
 
 class Database:
     """PostgreSQL database manager"""
@@ -195,6 +195,18 @@ class Database:
                     CONSTRAINT call_logic_config_single_row CHECK (id = 1)
                 )
             """)
+
+        if not await self._table_exists(conn, "pow_proxy_config"):
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS pow_proxy_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    pow_proxy_enabled BOOLEAN DEFAULT FALSE,
+                    pow_proxy_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT pow_proxy_config_single_row CHECK (id = 1)
+                )
+            """)
         # Ensure admin_config has a row
         count = await conn.fetchval("SELECT COUNT(*) FROM admin_config")
         if count == 0:
@@ -349,6 +361,24 @@ class Database:
                 VALUES (1, $1, $2)
                 ON CONFLICT (id) DO NOTHING
             """, call_mode, polling_mode_enabled)
+
+        # Ensure pow_proxy_config has a row
+        count = await conn.fetchval("SELECT COUNT(*) FROM pow_proxy_config")
+        if count == 0:
+            pow_proxy_enabled = False
+            pow_proxy_url = None
+
+            if config_dict:
+                pow_proxy_config = config_dict.get("pow_proxy", {})
+                pow_proxy_enabled = pow_proxy_config.get("pow_proxy_enabled", False)
+                pow_proxy_url = pow_proxy_config.get("pow_proxy_url", "")
+                pow_proxy_url = pow_proxy_url if pow_proxy_url else None
+
+            await conn.execute("""
+                INSERT INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url)
+                VALUES (1, $1, $2)
+                ON CONFLICT (id) DO NOTHING
+            """, pow_proxy_enabled, pow_proxy_url)
 
     async def check_and_migrate_db(self, config_dict: dict = None):
         """Check database integrity and perform migrations if needed
@@ -1169,3 +1199,23 @@ class Database:
                 SET call_mode = $1, polling_mode_enabled = $2, updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, call_mode, polling_mode_enabled)
+
+    # POW proxy config operations
+    async def get_pow_proxy_config(self) -> PowProxyConfig:
+        """Get POW proxy configuration"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM pow_proxy_config WHERE id = 1")
+            if row:
+                return PowProxyConfig(**dict(row))
+            return PowProxyConfig(pow_proxy_enabled=False, pow_proxy_url=None)
+
+    async def update_pow_proxy_config(self, pow_proxy_enabled: bool, pow_proxy_url: Optional[str] = None):
+        """Update POW proxy configuration"""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE pow_proxy_config
+                SET pow_proxy_enabled = $1, pow_proxy_url = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, pow_proxy_enabled, pow_proxy_url)

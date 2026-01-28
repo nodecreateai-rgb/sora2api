@@ -42,6 +42,10 @@ auto_disable_on_401 = true
 proxy_enabled = false
 proxy_url = ""
 
+[pow_proxy]
+pow_proxy_enabled = false
+pow_proxy_url = ""
+
 [watermark_free]
 watermark_free_enabled = false
 parse_method = "third_party"

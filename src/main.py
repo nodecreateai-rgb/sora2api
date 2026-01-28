@@ -151,6 +151,12 @@ async def startup_event():
     config.set_call_logic_mode(call_logic_config.call_mode)
     print(f"✓ Call logic mode: {call_logic_config.call_mode}")
 
+    # Load POW proxy configuration from database
+    pow_proxy_config = await db.get_pow_proxy_config()
+    config.set_pow_proxy_enabled(pow_proxy_config.pow_proxy_enabled)
+    config.set_pow_proxy_url(pow_proxy_config.pow_proxy_url or "")
+    print(f"✓ POW proxy enabled: {pow_proxy_config.pow_proxy_enabled}")
+
     # Initialize concurrency manager with all tokens
     all_tokens = await db.get_all_tokens()
     await concurrency_manager.initialize(all_tokens)

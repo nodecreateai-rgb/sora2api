@@ -172,6 +172,16 @@ CREATE TABLE IF NOT EXISTS call_logic_config (
     CONSTRAINT call_logic_config_single_row CHECK (id = 1)
 );
 
+-- POW proxy config table
+CREATE TABLE IF NOT EXISTS pow_proxy_config (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    pow_proxy_enabled BOOLEAN DEFAULT FALSE,
+    pow_proxy_url TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pow_proxy_config_single_row CHECK (id = 1)
+);
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status);
@@ -193,3 +203,4 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_a
 -- ALTER TABLE generation_config ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE token_refresh_config ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE call_logic_config ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE pow_proxy_config ENABLE ROW LEVEL SECURITY;

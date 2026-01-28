@@ -255,5 +255,27 @@ class Config:
         self._config["call_logic"]["call_mode"] = normalized
         self._config["call_logic"]["polling_mode_enabled"] = normalized == "polling"
 
+    @property
+    def pow_proxy_enabled(self) -> bool:
+        """Get POW proxy enabled status"""
+        return self._config.get("pow_proxy", {}).get("pow_proxy_enabled", False)
+
+    def set_pow_proxy_enabled(self, enabled: bool):
+        """Set POW proxy enabled/disabled"""
+        if "pow_proxy" not in self._config:
+            self._config["pow_proxy"] = {}
+        self._config["pow_proxy"]["pow_proxy_enabled"] = enabled
+
+    @property
+    def pow_proxy_url(self) -> str:
+        """Get POW proxy URL"""
+        return self._config.get("pow_proxy", {}).get("pow_proxy_url", "")
+
+    def set_pow_proxy_url(self, url: str):
+        """Set POW proxy URL"""
+        if "pow_proxy" not in self._config:
+            self._config["pow_proxy"] = {}
+        self._config["pow_proxy"]["pow_proxy_url"] = url
+
 # Global config instance
 config = Config()
