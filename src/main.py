@@ -12,6 +12,7 @@ from datetime import datetime
 # Import modules
 from .core.config import config
 from .core.database import Database
+from .core.middleware import RequestLoggingMiddleware
 from .services.token_manager import TokenManager
 from .services.proxy_manager import ProxyManager
 from .services.load_balancer import LoadBalancer
@@ -30,6 +31,9 @@ app = FastAPI(
     description="OpenAI compatible API for Sora",
     version="1.0.0"
 )
+
+# Request logging middleware (add first to log all requests)
+app.add_middleware(RequestLoggingMiddleware)
 
 # CORS middleware
 app.add_middleware(

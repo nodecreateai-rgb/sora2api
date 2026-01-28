@@ -41,8 +41,11 @@ def convert_utc_to_local(utc_time_str: Optional[str]) -> Optional[str]:
         return None
 
     try:
-        # Parse SQLite timestamp (UTC) - handle both with and without 'Z' suffix
-        dt = datetime.fromisoformat(utc_time_str.replace('Z', '+00:00'))
+        if isinstance(utc_time_str, datetime):
+            dt = utc_time_str
+        else:
+            # Parse timestamp string - handle both with and without 'Z' suffix
+            dt = datetime.fromisoformat(str(utc_time_str).replace('Z', '+00:00'))
 
         # If no timezone info, assume UTC
         if dt.tzinfo is None:
