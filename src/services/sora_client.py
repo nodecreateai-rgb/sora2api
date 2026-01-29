@@ -291,7 +291,7 @@ class SoraClient:
             "sec-ch-ua-platform": '"Android"',
         }
 
-        def _do_request() -> Tuple[Dict[str, Any], str]:
+        def _do_request() -> Tuple[Dict[str, Any], str, str]:
             scraper = cloudscraper.create_scraper()
             if proxy_url:
                 scraper.proxies = {"http": proxy_url, "https": proxy_url}
@@ -300,12 +300,13 @@ class SoraClient:
             if resp.status_code != 200:
                 raise Exception(f"Sentinel request failed: {resp.status_code} {resp.text}")
             cookie_header = "; ".join([f"{c.name}={c.value}" for c in scraper.cookies]) or ""
+            oai_did = scraper.cookies.get("oai-did") or device_id
             if "oai-did" not in cookie_header:
-                cookie_header = (cookie_header + "; " if cookie_header else "") + f"oai-did={device_id}"
-            return resp.json(), cookie_header
+                cookie_header = (cookie_header + "; " if cookie_header else "") + f"oai-did={oai_did}"
+            return resp.json(), cookie_header, oai_did
 
         try:
-            resp, cookie_header = await asyncio.to_thread(_do_request)
+            resp, cookie_header, oai_did = await asyncio.to_thread(_do_request)
             debug_logger.log_info(
                 f"[Cloudscraper] Sentinel response: turnstile.dx={bool(resp.get('turnstile', {}).get('dx'))}, "
                 f"token={bool(resp.get('token'))}, pow_required={resp.get('proofofwork', {}).get('required')}"
@@ -323,8 +324,9 @@ class SoraClient:
             self.SENTINEL_FLOW, req_id, pow_token, resp, user_agent
         )
         parsed = json.loads(sentinel_token)
-        parsed["id"] = device_id
+        parsed["id"] = oai_did
         sentinel_token = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        device_id = oai_did
         debug_logger.log_info(
             f"[Cloudscraper] Sentinel token: p_prefix={parsed['p'][:10]}, "
             f"p_suffix={parsed['p'][-5:]}, t_len={len(parsed['t'])}, "
@@ -332,6 +334,7 @@ class SoraClient:
         )
         if cookie_header:
             debug_logger.log_info(f"[Cloudscraper] Cookie header: {cookie_header}")
+        debug_logger.log_info(f"[Cloudscraper] oai-did: {device_id}")
         return sentinel_token, user_agent, cookie_header, device_id
 
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
