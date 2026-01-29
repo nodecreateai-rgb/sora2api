@@ -261,14 +261,15 @@ class SoraClient:
     async def _get_sentinel_token_via_cloudscraper(
         self,
         proxy_url: Optional[str] = None,
-        flow: Optional[str] = None
+        flow: Optional[str] = None,
+        device_id: Optional[str] = None
     ) -> Optional[Tuple[str, str, str, str]]:
         if not CLOUDSCRAPER_AVAILABLE:
             debug_logger.log_info("[Warning] cloudscraper not available, cannot use cloudscraper fallback")
             return None
 
-        req_id = str(uuid4())
-        device_id = str(uuid4())
+        req_id = device_id or str(uuid4())
+        device_id = device_id or str(uuid4())
         user_agent = "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         pow_token = self._get_pow_token(user_agent)
         flow = flow or self.SENTINEL_FLOW_DEFAULT
@@ -343,6 +344,48 @@ class SoraClient:
             debug_logger.log_info(f"[Cloudscraper] Cookie header: {cookie_header}")
         debug_logger.log_info(f"[Cloudscraper] oai-did: {device_id}")
         return sentinel_token, user_agent, cookie_header, device_id
+
+    async def _get_oai_did_via_session(
+        self,
+        proxy_url: Optional[str],
+        user_agent: str,
+        cookie_header: Optional[str] = None
+    ) -> Optional[str]:
+        if not CLOUDSCRAPER_AVAILABLE:
+            return None
+
+        session_url = "https://sora.chatgpt.com/api/auth/session"
+
+        def _do_request() -> Optional[str]:
+            scraper = cloudscraper.create_scraper()
+            if proxy_url:
+                scraper.proxies = {"http": proxy_url, "https": proxy_url}
+            if cookie_header:
+                for item in cookie_header.split(";"):
+                    chunk = item.strip()
+                    if not chunk or "=" not in chunk:
+                        continue
+                    name, value = chunk.split("=", 1)
+                    scraper.cookies.set(name, value, domain="chatgpt.com")
+            headers = {
+                "Accept": "*/*",
+                "User-Agent": user_agent,
+                "Origin": "https://sora.chatgpt.com",
+                "Referer": "https://sora.chatgpt.com/",
+            }
+            scraper.get(session_url, headers=headers, timeout=10)
+            return scraper.cookies.get("oai-did")
+
+        try:
+            oai_did = await asyncio.to_thread(_do_request)
+            if oai_did:
+                debug_logger.log_info(f"[Cloudscraper] Session oai-did: {oai_did}")
+            else:
+                debug_logger.log_info("[Cloudscraper] Session oai-did not found")
+            return oai_did
+        except Exception as e:
+            debug_logger.log_info(f"[Cloudscraper] Session oai-did fetch failed: {str(e)}")
+            return None
 
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
                                 proxy_url: Optional[str], token_id: Optional[int] = None,
@@ -850,8 +893,12 @@ class SoraClient:
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
 
+        session_ua = "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        session_oai_did = await self._get_oai_did_via_session(
+            pow_proxy_url, session_ua
+        )
         scraper_result = await self._get_sentinel_token_via_cloudscraper(
-            pow_proxy_url, flow=self.SENTINEL_FLOW_CREATE
+            pow_proxy_url, flow=self.SENTINEL_FLOW_CREATE, device_id=session_oai_did
         )
 
         if not scraper_result:
