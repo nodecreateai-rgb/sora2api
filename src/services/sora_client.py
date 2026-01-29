@@ -319,6 +319,37 @@ class SoraClient:
         )
         return sentinel_token
 
+    async def _get_sentinel_token_from_pow_service(self, proxy_url: Optional[str] = None) -> Optional[str]:
+        url = "https://pow.nodai.design/getToken"
+        try:
+            async with AsyncSession() as session:
+                kwargs = {"timeout": self.timeout}
+                if proxy_url:
+                    kwargs["proxy"] = proxy_url
+                resp = await session.get(url, **kwargs)
+                if resp.status_code != 200:
+                    raise Exception(f"PoW service failed: {resp.status_code} {resp.text}")
+
+                data = resp.json()
+                if not isinstance(data, dict) or not data.get("ok"):
+                    raise Exception(f"PoW service returned invalid payload: {data}")
+
+                token_value = data.get("token")
+                if isinstance(token_value, dict):
+                    token_value = json.dumps(token_value, separators=(',', ':'))
+                if not isinstance(token_value, str) or not token_value:
+                    raise Exception("PoW service token missing or invalid")
+
+                return token_value
+        except Exception as e:
+            debug_logger.log_error(
+                error_message=f"PoW service sentinel token failed: {str(e)}",
+                status_code=0,
+                response_text=str(e),
+                source="Server"
+            )
+            return None
+
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
                                 proxy_url: Optional[str], token_id: Optional[int] = None,
                                 user_agent: Optional[str] = None) -> Dict[str, Any]:
@@ -354,7 +385,25 @@ class SoraClient:
             )
             
             if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
-                debug_logger.log_info("Attempting cloudscraper fallback for sentinel token...")
+                debug_logger.log_info("Attempting PoW service fallback for sentinel token...")
+
+                service_token = await self._get_sentinel_token_from_pow_service(proxy_url)
+
+                if service_token:
+                    debug_logger.log_info("Got sentinel token from PoW service, retrying nf/create...")
+
+                    service_data = json.loads(service_token)
+                    service_device_id = service_data.get("id", device_id)
+
+                    headers["OpenAI-Sentinel-Token"] = service_token
+                    headers["OAI-Device-Id"] = service_device_id
+
+                    result = await asyncio.to_thread(
+                        self._post_json_sync, url, headers, payload, 30, proxy_url
+                    )
+                    return result
+
+                debug_logger.log_info("PoW service failed, attempting cloudscraper fallback for sentinel token...")
 
                 scraper_token = await self._get_sentinel_token_via_cloudscraper(proxy_url)
 
@@ -767,12 +816,16 @@ class SoraClient:
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
 
-        sentinel_token = await self._get_sentinel_token_via_cloudscraper(pow_proxy_url)
+        sentinel_token = await self._get_sentinel_token_from_pow_service(pow_proxy_url)
 
         if not sentinel_token:
-            # 如果 cloudscraper 方式失败，回退到手动 POW
-            debug_logger.log_info("[Warning] Cloudscraper sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
+            # 如果 PoW 服务失败，回退到 cloudscraper/手动 POW
+            debug_logger.log_info("[Warning] PoW service sentinel token failed, falling back to cloudscraper/manual POW")
+            sentinel_token = await self._get_sentinel_token_via_cloudscraper(pow_proxy_url)
+            if not sentinel_token:
+                sentinel_token, user_agent = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
+            else:
+                user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         else:
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         
@@ -1184,9 +1237,13 @@ class SoraClient:
             "style_id": style_id
         }
 
-        # Generate sentinel token and call /nf/create using urllib
+        # Generate sentinel token via PoW service and call /nf/create using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
-        sentinel_token, user_agent = await self._generate_sentinel_token(token)
+        sentinel_token = await self._get_sentinel_token_from_pow_service()
+        if not sentinel_token:
+            sentinel_token, user_agent = await self._generate_sentinel_token(token)
+        else:
+            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
         return result.get("id")
 
