@@ -2,7 +2,7 @@
 import jwt
 import asyncio
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from curl_cffi.requests import AsyncSession
 from faker import Faker
@@ -738,6 +738,8 @@ class TokenManager:
                 if sub_info.get("subscription_end"):
                     from dateutil import parser
                     subscription_end = parser.parse(sub_info["subscription_end"])
+                    if subscription_end.tzinfo is not None:
+                        subscription_end = subscription_end.astimezone(timezone.utc).replace(tzinfo=None)
             except Exception as e:
                 error_msg = str(e)
                 # Re-raise if it's a critical error (token expired)
