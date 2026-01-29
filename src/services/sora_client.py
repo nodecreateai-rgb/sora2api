@@ -108,7 +108,8 @@ class SoraClient:
     """Sora API client with proxy support"""
 
     CHATGPT_BASE_URL = "https://chatgpt.com"
-    SENTINEL_FLOW = "sora_2_create_task__auto"
+    SENTINEL_FLOW_DEFAULT = "sora_2_create_task__auto"
+    SENTINEL_FLOW_CREATE = "sora_2_create_task"
 
     def __init__(self, proxy_manager: ProxyManager):
         self.proxy_manager = proxy_manager
@@ -257,7 +258,11 @@ class SoraClient:
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
 
-    async def _get_sentinel_token_via_cloudscraper(self, proxy_url: Optional[str] = None) -> Optional[Tuple[str, str, str, str]]:
+    async def _get_sentinel_token_via_cloudscraper(
+        self,
+        proxy_url: Optional[str] = None,
+        flow: Optional[str] = None
+    ) -> Optional[Tuple[str, str, str, str]]:
         if not CLOUDSCRAPER_AVAILABLE:
             debug_logger.log_info("[Warning] cloudscraper not available, cannot use cloudscraper fallback")
             return None
@@ -266,10 +271,11 @@ class SoraClient:
         device_id = str(uuid4())
         user_agent = "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         pow_token = self._get_pow_token(user_agent)
+        flow = flow or self.SENTINEL_FLOW_DEFAULT
         init_payload = {
             "p": pow_token,
             "id": req_id,
-            "flow": "sora_init"
+            "flow": flow
         }
         ua_with_pow = f"{user_agent} {json.dumps(init_payload, separators=(',', ':'))}"
 
@@ -277,7 +283,7 @@ class SoraClient:
         request_payload = {
             "p": pow_token,
             "id": req_id,
-            "flow": "sora_init"
+            "flow": flow
         }
         request_body = json.dumps(request_payload, separators=(',', ':'))
         headers = {
@@ -320,8 +326,9 @@ class SoraClient:
             )
             return None
 
+        flow = flow or self.SENTINEL_FLOW_DEFAULT
         sentinel_token = self._build_sentinel_token(
-            self.SENTINEL_FLOW, req_id, pow_token, resp, user_agent
+            flow, req_id, pow_token, resp, user_agent
         )
         parsed = json.loads(sentinel_token)
         parsed["id"] = oai_did
@@ -363,7 +370,7 @@ class SoraClient:
             "OAI-Language": "en-US",
             "OAI-Device-Id": device_id,
             "Origin": "https://sora.chatgpt.com",
-            "Referer": "https://sora.chatgpt.com/",
+            "Referer": "https://sora.chatgpt.com//explore",
             "Accept": "application/json, text/plain, */*",
         }
         if cookie_header:
@@ -387,7 +394,9 @@ class SoraClient:
             if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
                 debug_logger.log_info("Attempting cloudscraper fallback for sentinel token...")
 
-                scraper_result = await self._get_sentinel_token_via_cloudscraper(proxy_url)
+                scraper_result = await self._get_sentinel_token_via_cloudscraper(
+                    proxy_url, flow=self.SENTINEL_FLOW_CREATE
+                )
 
                 if scraper_result:
                     debug_logger.log_info("Got sentinel token from cloudscraper, retrying nf/create...")
@@ -468,7 +477,7 @@ class SoraClient:
             raise Exception(f"URL Error: {exc}") from exc
 
     async def _generate_sentinel_token(self, token: Optional[str] = None, user_agent: Optional[str] = None,
-                                      proxy_url: Optional[str] = None) -> Tuple[str, str]:
+                                      proxy_url: Optional[str] = None, flow: Optional[str] = None) -> Tuple[str, str]:
         """Generate openai-sentinel-token by calling /backend-api/sentinel/req and solving PoW"""
         req_id = str(uuid4())
         if not user_agent:
@@ -530,8 +539,9 @@ class SoraClient:
             raise
 
         # Build final sentinel token
+        flow = flow or self.SENTINEL_FLOW_DEFAULT
         sentinel_token = self._build_sentinel_token(
-            self.SENTINEL_FLOW, req_id, pow_token, resp, user_agent
+            flow, req_id, pow_token, resp, user_agent
         )
         
         # Log final token for debugging
@@ -630,7 +640,9 @@ class SoraClient:
             pow_proxy_url = None
             if config.pow_proxy_enabled:
                 pow_proxy_url = config.pow_proxy_url or None
-            sentinel_token, ua = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
+            sentinel_token, ua = await self._generate_sentinel_token(
+                token, proxy_url=pow_proxy_url, flow=self.SENTINEL_FLOW_DEFAULT
+            )
             headers["openai-sentinel-token"] = sentinel_token
             headers["User-Agent"] = ua
 
@@ -838,12 +850,16 @@ class SoraClient:
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
 
-        scraper_result = await self._get_sentinel_token_via_cloudscraper(pow_proxy_url)
+        scraper_result = await self._get_sentinel_token_via_cloudscraper(
+            pow_proxy_url, flow=self.SENTINEL_FLOW_CREATE
+        )
 
         if not scraper_result:
             # 如果 cloudscraper 方式失败，回退到手动 POW
             debug_logger.log_info("[Warning] Cloudscraper sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
+            sentinel_token, user_agent = await self._generate_sentinel_token(
+                token, proxy_url=pow_proxy_url, flow=self.SENTINEL_FLOW_CREATE
+            )
             cookie_header = ""
             device_id = None
         else:
@@ -1261,7 +1277,9 @@ class SoraClient:
 
         # Generate sentinel token and call /nf/create using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
-        sentinel_token, user_agent = await self._generate_sentinel_token(token)
+        sentinel_token, user_agent = await self._generate_sentinel_token(
+            token, flow=self.SENTINEL_FLOW_CREATE
+        )
         result = await self._nf_create_urllib(
             token, json_data, sentinel_token, proxy_url, user_agent=user_agent
         )
