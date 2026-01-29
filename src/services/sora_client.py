@@ -349,6 +349,11 @@ class SoraClient:
         import json as json_mod
         sentinel_data = json_mod.loads(sentinel_token)
         device_id = device_id or sentinel_data.get("id", str(uuid4()))
+
+        if CLOUDSCRAPER_AVAILABLE:
+            await self._log_site_cookies_via_cloudscraper(
+                proxy_url, user_agent, cookie_header, device_id
+            )
         
         headers = {
             "Authorization": f"Bearer {token}",
@@ -403,6 +408,42 @@ class SoraClient:
                     return result
             
             raise
+
+    async def _log_site_cookies_via_cloudscraper(
+        self,
+        proxy_url: Optional[str],
+        user_agent: str,
+        cookie_header: Optional[str],
+        device_id: str
+    ):
+        session_url = "https://sora.chatgpt.com/api/auth/session"
+
+        def _do_request() -> str:
+            scraper = cloudscraper.create_scraper()
+            if proxy_url:
+                scraper.proxies = {"http": proxy_url, "https": proxy_url}
+            scraper.cookies.set("oai-did", device_id, domain="chatgpt.com")
+            if cookie_header:
+                for item in cookie_header.split(";"):
+                    chunk = item.strip()
+                    if not chunk or "=" not in chunk:
+                        continue
+                    name, value = chunk.split("=", 1)
+                    scraper.cookies.set(name, value, domain="chatgpt.com")
+            headers = {
+                "Accept": "*/*",
+                "User-Agent": user_agent,
+                "Origin": "https://sora.chatgpt.com",
+                "Referer": "https://sora.chatgpt.com/",
+            }
+            scraper.get(session_url, headers=headers, timeout=10)
+            return "; ".join([f"{c.name}={c.value}" for c in scraper.cookies])
+
+        try:
+            cookie_dump = await asyncio.to_thread(_do_request)
+            debug_logger.log_info(f"[Cloudscraper] Session cookies: {cookie_dump}")
+        except Exception as e:
+            debug_logger.log_info(f"[Cloudscraper] Session cookies fetch failed: {str(e)}")
 
     @staticmethod
     def _post_text_sync(url: str, headers: dict, body: str, timeout: int, proxy: Optional[str]) -> Dict[str, Any]:
