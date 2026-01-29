@@ -397,10 +397,19 @@ class Database:
             if await self._table_exists(conn, "tasks"):
                 has_retry_count = await self._column_exists(conn, "tasks", "retry_count")
                 if not has_retry_count:
-                    await conn.execute("""
-                        ALTER TABLE tasks
-                        ADD COLUMN retry_count INTEGER DEFAULT 0
-                    """)
+                    try:
+                        await conn.execute("""
+                            ALTER TABLE tasks
+                            ADD COLUMN retry_count INTEGER DEFAULT 0
+                        """)
+                    except Exception as e:
+                        # If DB user lacks ALTER privileges, skip and let operator migrate manually.
+                        debug_logger.log_error(
+                            error_message=f"DB migration skipped: cannot add tasks.retry_count ({str(e)})",
+                            status_code=0,
+                            response_text=str(e),
+                            source="Server"
+                        )
 
     async def init_db(self):
         """Initialize database tables - creates all tables and ensures data integrity"""
