@@ -320,7 +320,7 @@ class SoraClient:
         return sentinel_token
 
     async def _get_sentinel_token_from_pow_service(self, proxy_url: Optional[str] = None) -> Optional[str]:
-        url = "https://pow.nodai.design/getToken"
+        url = "https://pow.nodai.design/v1/token"
         try:
             async with AsyncSession() as session:
                 kwargs = {"timeout": self.timeout}
