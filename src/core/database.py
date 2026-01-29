@@ -393,6 +393,15 @@ class Database:
             # Pass config_dict if available to initialize from setting.toml
             await self._ensure_config_rows(conn, config_dict)
 
+            # Backfill missing columns for existing deployments
+            if await self._table_exists(conn, "tasks"):
+                has_retry_count = await self._column_exists(conn, "tasks", "retry_count")
+                if not has_retry_count:
+                    await conn.execute("""
+                        ALTER TABLE tasks
+                        ADD COLUMN retry_count INTEGER DEFAULT 0
+                    """)
+
     async def init_db(self):
         """Initialize database tables - creates all tables and ensures data integrity"""
         pool = await self._get_pool()
