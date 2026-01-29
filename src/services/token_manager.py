@@ -20,6 +20,14 @@ class TokenManager:
         self._lock = asyncio.Lock()
         self.proxy_manager = ProxyManager(db)
         self.fake = Faker()
+
+    @staticmethod
+    def _to_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
     
     async def decode_jwt(self, token: str) -> dict:
         """Decode JWT token without verification"""
@@ -737,9 +745,7 @@ class TokenManager:
                 # Parse subscription end time
                 if sub_info.get("subscription_end"):
                     from dateutil import parser
-                    subscription_end = parser.parse(sub_info["subscription_end"])
-                    if subscription_end.tzinfo is not None:
-                        subscription_end = subscription_end.astimezone(timezone.utc).replace(tzinfo=None)
+                    subscription_end = self._to_naive_utc(parser.parse(sub_info["subscription_end"]))
             except Exception as e:
                 error_msg = str(e)
                 # Re-raise if it's a critical error (token expired)
@@ -876,7 +882,7 @@ class TokenManager:
             plan_title = sub_info.get("plan_title")
             if sub_info.get("subscription_end"):
                 from dateutil import parser
-                subscription_end = parser.parse(sub_info["subscription_end"])
+                subscription_end = self._to_naive_utc(parser.parse(sub_info["subscription_end"]))
         except Exception as e:
             print(f"Failed to get subscription info: {e}")
 
@@ -984,7 +990,7 @@ class TokenManager:
                 # Parse subscription end time
                 if sub_info.get("subscription_end"):
                     from dateutil import parser
-                    subscription_end = parser.parse(sub_info["subscription_end"])
+                    subscription_end = self._to_naive_utc(parser.parse(sub_info["subscription_end"]))
             except Exception as e:
                 print(f"Failed to get subscription info: {e}")
 
