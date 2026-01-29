@@ -257,7 +257,7 @@ class SoraClient:
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
 
-    async def _get_sentinel_token_via_cloudscraper(self, proxy_url: Optional[str] = None) -> Optional[Tuple[str, str]]:
+    async def _get_sentinel_token_via_cloudscraper(self, proxy_url: Optional[str] = None) -> Optional[Tuple[str, str, str]]:
         if not CLOUDSCRAPER_AVAILABLE:
             debug_logger.log_info("[Warning] cloudscraper not available, cannot use cloudscraper fallback")
             return None
@@ -290,17 +290,18 @@ class SoraClient:
             "sec-ch-ua-platform": '"Android"',
         }
 
-        def _do_request() -> Dict[str, Any]:
+        def _do_request() -> Tuple[Dict[str, Any], str]:
             scraper = cloudscraper.create_scraper()
             if proxy_url:
                 scraper.proxies = {"http": proxy_url, "https": proxy_url}
             resp = scraper.post(url, headers=headers, data=request_body, timeout=10)
             if resp.status_code != 200:
                 raise Exception(f"Sentinel request failed: {resp.status_code} {resp.text}")
-            return resp.json()
+            cookie_header = "; ".join([f"{c.name}={c.value}" for c in scraper.cookies])
+            return resp.json(), cookie_header
 
         try:
-            resp = await asyncio.to_thread(_do_request)
+            resp, cookie_header = await asyncio.to_thread(_do_request)
             debug_logger.log_info(
                 f"[Cloudscraper] Sentinel response: turnstile.dx={bool(resp.get('turnstile', {}).get('dx'))}, "
                 f"token={bool(resp.get('token'))}, pow_required={resp.get('proofofwork', {}).get('required')}"
@@ -323,11 +324,14 @@ class SoraClient:
             f"p_suffix={parsed['p'][-5:]}, t_len={len(parsed['t'])}, "
             f"c_len={len(parsed['c'])}, flow={parsed['flow']}"
         )
-        return sentinel_token, user_agent
+        if cookie_header:
+            debug_logger.log_info(f"[Cloudscraper] Cookie header: {cookie_header}")
+        return sentinel_token, user_agent, cookie_header
 
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
                                 proxy_url: Optional[str], token_id: Optional[int] = None,
-                                user_agent: Optional[str] = None) -> Dict[str, Any]:
+                                user_agent: Optional[str] = None,
+                                cookie_header: Optional[str] = None) -> Dict[str, Any]:
         url = f"{self.base_url}/nf/create"
         if not user_agent:
             user_agent = random.choice(DESKTOP_USER_AGENTS)
@@ -343,7 +347,13 @@ class SoraClient:
             "User-Agent": user_agent,
             "OAI-Language": "en-US",
             "OAI-Device-Id": device_id,
+            "Origin": "https://sora.chatgpt.com",
+            "Referer": "https://sora.chatgpt.com/",
+            "Accept": "application/json, text/plain, */*",
         }
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+            debug_logger.log_info(f"[nf/create] Using Cookie: {cookie_header}")
 
         try:
             result = await asyncio.to_thread(
@@ -367,13 +377,15 @@ class SoraClient:
                 if scraper_result:
                     debug_logger.log_info("Got sentinel token from cloudscraper, retrying nf/create...")
 
-                    scraper_token, scraper_ua = scraper_result
+                    scraper_token, scraper_ua, scraper_cookie = scraper_result
                     scraper_data = json.loads(scraper_token)
                     scraper_device_id = scraper_data.get("id", device_id)
 
                     headers["OpenAI-Sentinel-Token"] = scraper_token
                     headers["OAI-Device-Id"] = scraper_device_id
                     headers["User-Agent"] = scraper_ua
+                    if scraper_cookie:
+                        headers["Cookie"] = scraper_cookie
                     
                     result = await asyncio.to_thread(
                         self._post_json_sync, url, headers, payload, 30, proxy_url
@@ -781,10 +793,13 @@ class SoraClient:
             # 如果 cloudscraper 方式失败，回退到手动 POW
             debug_logger.log_info("[Warning] Cloudscraper sentinel token failed, falling back to manual POW")
             sentinel_token, user_agent = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
+            cookie_header = ""
         else:
-            sentinel_token, user_agent = scraper_result
+            sentinel_token, user_agent, cookie_header = scraper_result
         
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
+        result = await self._nf_create_urllib(
+            token, json_data, sentinel_token, proxy_url, token_id, user_agent, cookie_header
+        )
         return result["id"]
     
     async def get_image_tasks(self, token: str, limit: int = 20, token_id: Optional[int] = None) -> Dict[str, Any]:
@@ -1195,7 +1210,9 @@ class SoraClient:
         # Generate sentinel token and call /nf/create using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
         sentinel_token, user_agent = await self._generate_sentinel_token(token)
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
+        result = await self._nf_create_urllib(
+            token, json_data, sentinel_token, proxy_url, user_agent=user_agent
+        )
         return result.get("id")
 
     async def generate_storyboard(self, prompt: str, token: str, orientation: str = "landscape",
