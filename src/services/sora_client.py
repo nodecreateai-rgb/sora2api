@@ -320,7 +320,7 @@ class SoraClient:
         return sentinel_token
 
     async def _get_sentinel_token_from_pow_service(self, proxy_url: Optional[str] = None) -> Optional[str]:
-        url = "https://pow.nodai.design/v1/token"
+        url = "https://pow.nodai.design/v1/token?nc=1"
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
