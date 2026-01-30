@@ -604,13 +604,15 @@ async def generate_video(
         if request.stream:
             async def generate():
                 try:
-                    async for chunk in generation_handler.handle_generation(
+                    async for chunk in generation_handler.handle_generation_with_retry(
                         model=request.model,
                         prompt=prompt,
                         image=None,
                         video=None,
                         remix_target_id=None,
-                        stream=True
+                        stream=True,
+                        max_retries_override=3,
+                        disable_timeout=True
                     ):
                         yield chunk
                 except Exception as e:
@@ -638,13 +640,15 @@ async def generate_video(
         else:
             # 非流式响应
             result = None
-            async for chunk in generation_handler.handle_generation(
+            async for chunk in generation_handler.handle_generation_with_retry(
                 model=request.model,
                 prompt=prompt,
                 image=None,
                 video=None,
                 remix_target_id=None,
-                stream=False
+                stream=False,
+                max_retries_override=3,
+                disable_timeout=True
             ):
                 result = chunk
             

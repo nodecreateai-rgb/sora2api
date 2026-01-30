@@ -766,7 +766,8 @@ class GenerationHandler:
                                video: Optional[str] = None,
                                remix_target_id: Optional[str] = None,
                                stream: bool = True,
-                               show_init_message: bool = True) -> AsyncGenerator[str, None]:
+                               show_init_message: bool = True,
+                               disable_timeout: bool = False) -> AsyncGenerator[str, None]:
         """Handle generation request
 
         Args:
@@ -994,7 +995,17 @@ class GenerationHandler:
             await self.token_manager.record_usage(token_obj.id, is_video=is_video)
             
             # Poll for results with timeout
-            async for chunk in self._poll_task_result(task_id, token_obj.token, is_video, stream, prompt, token_obj.id, log_id, start_time):
+            async for chunk in self._poll_task_result(
+                task_id,
+                token_obj.token,
+                is_video,
+                stream,
+                prompt,
+                token_obj.id,
+                log_id,
+                start_time,
+                disable_timeout=disable_timeout
+            ):
                 yield chunk
             
             # Record success
@@ -1129,7 +1140,9 @@ class GenerationHandler:
                                           image: Optional[str] = None,
                                           video: Optional[str] = None,
                                           remix_target_id: Optional[str] = None,
-                                          stream: bool = True) -> AsyncGenerator[str, None]:
+                                          stream: bool = True,
+                                          max_retries_override: Optional[int] = None,
+                                          disable_timeout: bool = False) -> AsyncGenerator[str, None]:
         """Handle generation request with automatic retry on failure
 
         Args:
@@ -1144,6 +1157,9 @@ class GenerationHandler:
         admin_config = await self.db.get_admin_config()
         retry_enabled = admin_config.task_retry_enabled
         max_retries = admin_config.task_max_retries if retry_enabled else 0
+        if max_retries_override is not None:
+            retry_enabled = max_retries_override > 0
+            max_retries = max_retries_override
         auto_disable_on_401 = admin_config.auto_disable_on_401
 
         retry_count = 0
@@ -1155,7 +1171,16 @@ class GenerationHandler:
                 # Try generation
                 # Only show init message on first attempt (not on retries)
                 show_init = (retry_count == 0)
-                async for chunk in self.handle_generation(model, prompt, image, video, remix_target_id, stream, show_init_message=show_init):
+                async for chunk in self.handle_generation(
+                    model,
+                    prompt,
+                    image,
+                    video,
+                    remix_target_id,
+                    stream,
+                    show_init_message=show_init,
+                    disable_timeout=disable_timeout
+                ):
                     yield chunk
                 # If successful, return
                 return
@@ -1216,12 +1241,13 @@ class GenerationHandler:
 
     async def _poll_task_result(self, task_id: str, token: str, is_video: bool,
                                 stream: bool, prompt: str, token_id: int = None,
-                                log_id: int = None, start_time: float = None) -> AsyncGenerator[str, None]:
+                                log_id: int = None, start_time: float = None,
+                                disable_timeout: bool = False) -> AsyncGenerator[str, None]:
         """Poll for task result with timeout"""
-        # Get timeout from config
-        timeout = config.video_timeout if is_video else config.image_timeout
+        # Get timeout from config unless explicitly disabled
+        timeout = None if disable_timeout else (config.video_timeout if is_video else config.image_timeout)
         poll_interval = config.poll_interval
-        max_attempts = int(timeout / poll_interval)  # Calculate max attempts based on timeout
+        max_attempts = None if timeout is None else int(timeout / poll_interval)
         last_progress = 0
         start_time = time.time()
         last_heartbeat_time = start_time  # Track last heartbeat for image generation
@@ -1229,17 +1255,20 @@ class GenerationHandler:
         last_status_output_time = start_time  # Track last status output time for video generation
         video_status_interval = 30  # Output status every 30 seconds for video generation
 
-        debug_logger.log_info(f"Starting task polling: task_id={task_id}, is_video={is_video}, timeout={timeout}s, max_attempts={max_attempts}")
+        debug_logger.log_info(
+            f"Starting task polling: task_id={task_id}, is_video={is_video}, timeout={'disabled' if timeout is None else f'{timeout}s'}, "
+            f"max_attempts={'disabled' if max_attempts is None else max_attempts}"
+        )
 
         # Check and log watermark-free mode status at the beginning
         if is_video:
             watermark_free_config = await self.db.get_watermark_free_config()
             debug_logger.log_info(f"Watermark-free mode: {'ENABLED' if watermark_free_config.watermark_free_enabled else 'DISABLED'}")
 
-        for attempt in range(max_attempts):
+        while True:
             # Check if timeout exceeded
             elapsed_time = time.time() - start_time
-            if elapsed_time > timeout:
+            if timeout is not None and elapsed_time > timeout:
                 debug_logger.log_error(
                     error_message=f"Task timeout: {elapsed_time:.1f}s > {timeout}s",
                     status_code=408,
@@ -1273,7 +1302,6 @@ class GenerationHandler:
                     )
 
                 raise Exception(f"Upstream API timeout: Generation exceeded {timeout} seconds limit")
-
 
             await asyncio.sleep(poll_interval)
 

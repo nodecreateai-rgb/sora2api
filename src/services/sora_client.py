@@ -320,35 +320,38 @@ class SoraClient:
         return sentinel_token
 
     async def _get_sentinel_token_from_pow_service(self, proxy_url: Optional[str] = None) -> Optional[str]:
-        url = "https://pow.nodai.design/v1/token?nc=1"
-        try:
-            async with AsyncSession() as session:
-                kwargs = {"timeout": self.timeout}
-                if proxy_url:
-                    kwargs["proxy"] = proxy_url
-                resp = await session.get(url, **kwargs)
-                if resp.status_code != 200:
-                    raise Exception(f"PoW service failed: {resp.status_code} {resp.text}")
+        url = "https://pow.nodai.design/v1/token"
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                async with AsyncSession() as session:
+                    # No timeout for PoW service as requested
+                    resp = await session.get(url)
+                    if resp.status_code != 200:
+                        raise Exception(f"PoW service failed: {resp.status_code} {resp.text}")
 
-                data = resp.json()
-                if not isinstance(data, dict) or not data.get("ok"):
-                    raise Exception(f"PoW service returned invalid payload: {data}")
+                    data = resp.json()
+                    if not isinstance(data, dict) or not data.get("ok"):
+                        raise Exception(f"PoW service returned invalid payload: {data}")
 
-                token_value = data.get("token")
-                if isinstance(token_value, dict):
-                    token_value = json.dumps(token_value, separators=(',', ':'))
-                if not isinstance(token_value, str) or not token_value:
-                    raise Exception("PoW service token missing or invalid")
+                    token_value = data.get("token")
+                    if isinstance(token_value, dict):
+                        token_value = json.dumps(token_value, separators=(',', ':'))
+                    if not isinstance(token_value, str) or not token_value:
+                        raise Exception("PoW service token missing or invalid")
 
-                return token_value
-        except Exception as e:
-            debug_logger.log_error(
-                error_message=f"PoW service sentinel token failed: {str(e)}",
-                status_code=0,
-                response_text=str(e),
-                source="Server"
-            )
-            return None
+                    return token_value
+            except Exception as e:
+                is_last = attempt == max_attempts - 1
+                debug_logger.log_error(
+                    error_message=f"PoW service sentinel token failed (attempt {attempt + 1}/{max_attempts}): {str(e)}",
+                    status_code=0,
+                    response_text=str(e),
+                    source="Server"
+                )
+                if is_last:
+                    return None
+                await asyncio.sleep(1)
 
     async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
                                 proxy_url: Optional[str], token_id: Optional[int] = None,
