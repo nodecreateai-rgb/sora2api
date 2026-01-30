@@ -327,6 +327,9 @@ class SoraClient:
                 async with AsyncSession() as session:
                     # No timeout for PoW service as requested
                     resp = await session.get(url)
+                    debug_logger.log_info(
+                        f"[PoW service] status={resp.status_code}, body={resp.text}"
+                    )
                     if resp.status_code != 200:
                         raise Exception(f"PoW service failed: {resp.status_code} {resp.text}")
 
@@ -340,6 +343,12 @@ class SoraClient:
                     if not isinstance(token_value, str) or not token_value:
                         raise Exception("PoW service token missing or invalid")
 
+                    token_prefix = token_value[:12]
+                    token_suffix = token_value[-12:] if len(token_value) > 12 else token_value
+                    debug_logger.log_info(
+                        f"PoW service token OK (attempt {attempt + 1}/{max_attempts}, len={len(token_value)}, "
+                        f"prefix={token_prefix}, suffix={token_suffix})"
+                    )
                     return token_value
             except Exception as e:
                 is_last = attempt == max_attempts - 1
@@ -348,6 +357,9 @@ class SoraClient:
                     status_code=0,
                     response_text=str(e),
                     source="Server"
+                )
+                debug_logger.log_info(
+                    f"[PoW service error] attempt {attempt + 1}/{max_attempts}, error={str(e)}"
                 )
                 if is_last:
                     return None
@@ -819,10 +831,12 @@ class SoraClient:
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
 
+        debug_logger.log_info("[generate_video] Fetching sentinel token via PoW service...")
         sentinel_token = await self._get_sentinel_token_from_pow_service(pow_proxy_url)
 
         if not sentinel_token:
             # 如果 PoW 服务失败，回退到 cloudscraper/手动 POW
+            debug_logger.log_info("[generate_video] PoW service failed, falling back to cloudscraper/manual POW")
             debug_logger.log_info("[Warning] PoW service sentinel token failed, falling back to cloudscraper/manual POW")
             sentinel_token = await self._get_sentinel_token_via_cloudscraper(pow_proxy_url)
             if not sentinel_token:
@@ -830,6 +844,7 @@ class SoraClient:
             else:
                 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         else:
+            debug_logger.log_info("[generate_video] PoW service token acquired")
             user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         
         result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
