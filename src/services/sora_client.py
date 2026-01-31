@@ -319,123 +319,33 @@ class SoraClient:
         )
         return sentinel_token
 
-    async def _get_sentinel_token_from_pow_service(self, proxy_url: Optional[str] = None) -> Optional[str]:
-        url = "https://pow.nodai.design/v1/token?nc=1"
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                async with AsyncSession() as session:
-                    # No timeout for PoW service as requested
-                    resp = await session.get(url)
-                    debug_logger.log_info(
-                        f"[PoW service] status={resp.status_code}, body={resp.text}"
-                    )
-                    if resp.status_code != 200:
-                        raise Exception(f"PoW service failed: {resp.status_code} {resp.text}")
+    async def _nf_create_urllib(self, token: str, payload: dict,
+                                proxy_url: Optional[str], token_id: Optional[int] = None) -> Dict[str, Any]:
+        url = "https://gen.nodai.design/v1/sora"
 
-                    data = resp.json()
-                    if not isinstance(data, dict) or not data.get("ok"):
-                        raise Exception(f"PoW service returned invalid payload: {data}")
-
-                    token_value = data.get("token")
-                    if isinstance(token_value, dict):
-                        token_value = json.dumps(token_value, separators=(',', ':'))
-                    if not isinstance(token_value, str) or not token_value:
-                        raise Exception("PoW service token missing or invalid")
-
-                    token_prefix = token_value[:12]
-                    token_suffix = token_value[-12:] if len(token_value) > 12 else token_value
-                    debug_logger.log_info(
-                        f"PoW service token OK (attempt {attempt + 1}/{max_attempts}, len={len(token_value)}, "
-                        f"prefix={token_prefix}, suffix={token_suffix})"
-                    )
-                    return token_value
-            except Exception as e:
-                is_last = attempt == max_attempts - 1
-                debug_logger.log_error(
-                    error_message=f"PoW service sentinel token failed (attempt {attempt + 1}/{max_attempts}): {str(e)}",
-                    status_code=0,
-                    response_text=str(e),
-                    source="Server"
-                )
-                debug_logger.log_info(
-                    f"[PoW service error] attempt {attempt + 1}/{max_attempts}, error={str(e)}"
-                )
-                if is_last:
-                    return None
-                await asyncio.sleep(1)
-
-    async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
-                                proxy_url: Optional[str], token_id: Optional[int] = None,
-                                user_agent: Optional[str] = None) -> Dict[str, Any]:
-        url = f"{self.base_url}/nf/create"
-        if not user_agent:
-            user_agent = random.choice(DESKTOP_USER_AGENTS)
-
-        import json as json_mod
-        sentinel_data = json_mod.loads(sentinel_token)
-        device_id = sentinel_data.get("id", str(uuid4()))
-        
         headers = {
-            "Authorization": f"Bearer {token}",
-            "OpenAI-Sentinel-Token": sentinel_token,
             "Content-Type": "application/json",
-            "User-Agent": user_agent,
-            "OAI-Language": "en-US",
-            "OAI-Device-Id": device_id,
+        }
+
+        body = {
+            "accessToken": token,
+            "gen": payload,
+            "proxy": proxy_url or "",
         }
 
         try:
             result = await asyncio.to_thread(
-                self._post_json_sync, url, headers, payload, 30, proxy_url
+                self._post_json_sync, url, headers, body, 30, proxy_url
             )
             return result
         except Exception as e:
             error_str = str(e)
             debug_logger.log_error(
-                error_message=f"nf/create request failed: {error_str}",
+                error_message=f"gen.nodai.design request failed: {error_str}",
                 status_code=0,
                 response_text=error_str,
                 source="Server"
             )
-            
-            if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
-                debug_logger.log_info("Attempting PoW service fallback for sentinel token...")
-
-                service_token = await self._get_sentinel_token_from_pow_service(proxy_url)
-
-                if service_token:
-                    debug_logger.log_info("Got sentinel token from PoW service, retrying nf/create...")
-
-                    service_data = json.loads(service_token)
-                    service_device_id = service_data.get("id", device_id)
-
-                    headers["OpenAI-Sentinel-Token"] = service_token
-                    headers["OAI-Device-Id"] = service_device_id
-
-                    result = await asyncio.to_thread(
-                        self._post_json_sync, url, headers, payload, 30, proxy_url
-                    )
-                    return result
-
-                debug_logger.log_info("PoW service failed, attempting cloudscraper fallback for sentinel token...")
-
-                scraper_token = await self._get_sentinel_token_via_cloudscraper(proxy_url)
-
-                if scraper_token:
-                    debug_logger.log_info("Got sentinel token from cloudscraper, retrying nf/create...")
-
-                    scraper_data = json.loads(scraper_token)
-                    scraper_device_id = scraper_data.get("id", device_id)
-
-                    headers["OpenAI-Sentinel-Token"] = scraper_token
-                    headers["OAI-Device-Id"] = scraper_device_id
-                    
-                    result = await asyncio.to_thread(
-                        self._post_json_sync, url, headers, payload, 30, proxy_url
-                    )
-                    return result
-            
             raise
 
     @staticmethod
@@ -826,28 +736,7 @@ class SoraClient:
 
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
-        # Get POW proxy from configuration
-        pow_proxy_url = None
-        if config.pow_proxy_enabled:
-            pow_proxy_url = config.pow_proxy_url or None
-
-        debug_logger.log_info("[generate_video] Fetching sentinel token via PoW service...")
-        sentinel_token = await self._get_sentinel_token_from_pow_service(pow_proxy_url)
-
-        if not sentinel_token:
-            # 如果 PoW 服务失败，回退到 cloudscraper/手动 POW
-            debug_logger.log_info("[generate_video] PoW service failed, falling back to cloudscraper/manual POW")
-            debug_logger.log_info("[Warning] PoW service sentinel token failed, falling back to cloudscraper/manual POW")
-            sentinel_token = await self._get_sentinel_token_via_cloudscraper(pow_proxy_url)
-            if not sentinel_token:
-                sentinel_token, user_agent = await self._generate_sentinel_token(token, proxy_url=pow_proxy_url)
-            else:
-                user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        else:
-            debug_logger.log_info("[generate_video] PoW service token acquired")
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
+        result = await self._nf_create_urllib(token, json_data, proxy_url, token_id)
         return result["id"]
     
     async def get_image_tasks(self, token: str, limit: int = 20, token_id: Optional[int] = None) -> Dict[str, Any]:
@@ -1255,14 +1144,9 @@ class SoraClient:
             "style_id": style_id
         }
 
-        # Generate sentinel token via PoW service and call /nf/create using urllib
+        # Call gen.nodai.design/v1/sora using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
-        sentinel_token = await self._get_sentinel_token_from_pow_service()
-        if not sentinel_token:
-            sentinel_token, user_agent = await self._generate_sentinel_token(token)
-        else:
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
+        result = await self._nf_create_urllib(token, json_data, proxy_url)
         return result.get("id")
 
     async def generate_storyboard(self, prompt: str, token: str, orientation: str = "landscape",
