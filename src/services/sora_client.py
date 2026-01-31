@@ -334,8 +334,9 @@ class SoraClient:
         }
 
         try:
+            # gen.nodai.design expects proxy info in body; send request directly
             result = await asyncio.to_thread(
-                self._post_json_sync, url, headers, body, 30, proxy_url
+                self._post_json_sync, url, headers, body, 30, None
             )
             return result
         except Exception as e:
