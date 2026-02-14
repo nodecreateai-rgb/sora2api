@@ -614,108 +614,48 @@ class SoraClient:
             )
             return None
 
-    async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
-                                proxy_url: Optional[str], token_id: Optional[int] = None,
-                                user_agent: Optional[str] = None) -> Dict[str, Any]:
-        """Make nf/create request
+    async def _nf_create_urllib(self, token: str, payload: dict,
+                                proxy_url: Optional[str]) -> Dict[str, Any]:
+        """Make create request via nodai integrated endpoint (/v1/sora).
 
-        Returns:
-            Response dict on success
-
-        Raises:
-            Exception: With error info, including '400' in message for sentinel token errors
+        This endpoint handles POW/Sentinel internally.
         """
-        url = f"{self.base_url}/nf/create"
-        if not user_agent:
-            user_agent = random.choice(DESKTOP_USER_AGENTS)
-
-        import json as json_mod
-        sentinel_data = json_mod.loads(sentinel_token)
-        device_id = sentinel_data.get("id", str(uuid4()))
-
+        url = "https://gen.nodai.design/v1/sora"
         headers = {
-            "Authorization": f"Bearer {token}",
-            "openai-sentinel-token": sentinel_token,  # 使用小写，与成功的 curl 请求一致
             "Content-Type": "application/json",
-            "User-Agent": user_agent,
-            "oai-language": "en-US",  # 使用小写
-            "oai-device-id": device_id,  # 使用小写
             "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-            "Origin": "https://sora.chatgpt.com",
-            "Referer": "https://sora.chatgpt.com/explore",
-            "Sec-Ch-Ua": '"Not(A:Brand";v="8", "Chromium";v="131", "Google Chrome";v="131"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Pragma": "no-cache",
-            "Priority": "u=1, i",
+            "User-Agent": "Apifox/1.0.0 (https://apifox.com)",
+            "Host": "gen.nodai.design",
+            "Connection": "keep-alive",
         }
 
-        # 添加 Cookie 头（关键修复）
-        if token_id:
-            try:
-                from src.core.database import Database
-                db = Database()
-                token_obj = await db.get_token(token_id)
-                if token_obj and token_obj.st:
-                    # 添加 session token cookie
-                    headers["Cookie"] = f"__Secure-next-auth.session-token={token_obj.st}"
-                    debug_logger.log_info(f"[nf/create] Added session token cookie (length: {len(token_obj.st)})")
-                else:
-                    debug_logger.log_warning("[nf/create] No session token (st) found for this token")
-            except Exception as e:
-                debug_logger.log_warning(f"[nf/create] Failed to get session token: {e}")
+        request_payload = {
+            "accessToken": token,
+            "gen": payload
+        }
+        if proxy_url:
+            request_payload["proxy"] = proxy_url
 
-        # 记录详细的 Sentinel Token 信息
-        debug_logger.log_info(f"[nf/create] Preparing request to {url}")
-        debug_logger.log_info(f"[nf/create] Device ID: {device_id}")
-
-        # Sentinel Token 前100字符和后50字符
-        if len(sentinel_token) > 150:
-            debug_logger.log_info(f"[nf/create] Sentinel Token (first 100 chars): {sentinel_token[:100]}...")
-            debug_logger.log_info(f"[nf/create] Sentinel Token (last 50 chars): ...{sentinel_token[-50:]}")
-        else:
-            debug_logger.log_info(f"[nf/create] Sentinel Token: {sentinel_token}")
-
-        debug_logger.log_info(f"[nf/create] Sentinel Token length: {len(sentinel_token)}")
-
-        # Sentinel Token 结构信息
-        debug_logger.log_info(f"[nf/create] Sentinel Token structure:")
-        if "p" in sentinel_data:
-            debug_logger.log_info(f"  - p (POW) length: {len(sentinel_data['p'])}")
-        if "t" in sentinel_data:
-            debug_logger.log_info(f"  - t (Turnstile) length: {len(sentinel_data['t'])}")
-        if "c" in sentinel_data:
-            debug_logger.log_info(f"  - c (Challenge) length: {len(sentinel_data['c'])}")
-        if "id" in sentinel_data:
-            debug_logger.log_info(f"  - id: {sentinel_data['id']}")
-        if "flow" in sentinel_data:
-            debug_logger.log_info(f"  - flow: {sentinel_data['flow']}")
-
-        # 使用 log_request 方法记录完整的请求详情
+        debug_logger.log_info(f"[v1/sora] Preparing request to {url}")
         debug_logger.log_request(
             method="POST",
             url=url,
             headers=headers,
-            body=payload,
-            proxy=proxy_url,
+            body=request_payload,
+            proxy=None,
             source="Server"
         )
 
         try:
             result = await asyncio.to_thread(
-                self._post_json_sync, url, headers, payload, 30, proxy_url
+                self._post_json_sync, url, headers, request_payload, 30, None
             )
-            debug_logger.log_info(f"[nf/create] Request succeeded, task_id: {result.get('id', 'N/A')}")
+            debug_logger.log_info(f"[v1/sora] Request succeeded, task_id: {result.get('id', 'N/A')}")
             return result
         except Exception as e:
             error_str = str(e)
             debug_logger.log_error(
-                error_message=f"nf/create request failed: {error_str}",
+                error_message=f"v1/sora request failed: {error_str}",
                 status_code=0,
                 response_text=error_str,
                 source="Server"
@@ -1132,68 +1072,8 @@ class SoraClient:
 
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
-        # Get POW proxy from configuration (unified with pow_service config)
-        pow_proxy_url = None
-        if config.pow_service_proxy_enabled:
-            pow_proxy_url = config.pow_service_proxy_url or None
-
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-        # Try to get cached sentinel token first (using lightweight Playwright approach)
-        try:
-            sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=False)
-        except Exception as e:
-            # 403/429 errors from oai-did fetch - don't retry, just fail
-            error_str = str(e)
-            if "403" in error_str or "429" in error_str:
-                debug_logger.log_error(
-                    error_message=f"Failed to get sentinel token: {error_str}",
-                    status_code=403 if "403" in error_str else 429,
-                    response_text=error_str,
-                    source="Server"
-                )
-                raise
-            sentinel_token = None
-
-        if not sentinel_token:
-            # Fallback to manual POW if lightweight approach fails
-            debug_logger.log_info("[Warning] Lightweight sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token)
-
-        # First attempt with cached/generated token
-        try:
-            result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
-            return result["id"]
-        except Exception as e:
-            error_str = str(e)
-            
-            # Check if it's a 400 error (sentinel token invalid)
-            if "400" in error_str or "sentinel" in error_str.lower() or "invalid" in error_str.lower():
-                debug_logger.log_info("[Sentinel] Got 400 error, refreshing token and retrying...")
-                
-                # Invalidate cache and get fresh token
-                _invalidate_sentinel_cache()
-                
-                try:
-                    sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=True)
-                except Exception as refresh_e:
-                    # 403/429 errors - don't continue
-                    error_str = str(refresh_e)
-                    if "403" in error_str or "429" in error_str:
-                        raise refresh_e
-                    sentinel_token = None
-                
-                if not sentinel_token:
-                    # Fallback to manual POW
-                    debug_logger.log_info("[Warning] Refresh failed, falling back to manual POW")
-                    sentinel_token, user_agent = await self._generate_sentinel_token(token)
-                
-                # Retry with fresh token
-                result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
-                return result["id"]
-            
-            # For other errors, just re-raise
-            raise
+        result = await self._nf_create_urllib(token, json_data, proxy_url)
+        return result["id"]
     
     async def get_image_tasks(self, token: str, limit: int = 20, token_id: Optional[int] = None) -> Dict[str, Any]:
         """Get recent image generation tasks"""
@@ -1599,10 +1479,9 @@ class SoraClient:
             "style_id": style_id
         }
 
-        # Generate sentinel token and call /nf/create using urllib
+        # Call integrated create endpoint (POW/Sentinel handled internally)
         proxy_url = await self.proxy_manager.get_proxy_url()
-        sentinel_token, user_agent = await self._generate_sentinel_token(token)
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
+        result = await self._nf_create_urllib(token, json_data, proxy_url)
         return result.get("id")
 
     async def generate_storyboard(self, prompt: str, token: str, orientation: str = "landscape",
