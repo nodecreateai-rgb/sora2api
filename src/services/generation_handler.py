@@ -5,6 +5,7 @@ import base64
 import time
 import random
 import re
+import cloudscraper
 from typing import Optional, AsyncGenerator, Dict, Any
 from datetime import datetime
 from .sora_client import SoraClient
@@ -372,23 +373,17 @@ class GenerationHandler:
         Returns:
             File bytes
         """
-        from curl_cffi.requests import AsyncSession
-
         proxy_url = await self.load_balancer.proxy_manager.get_proxy_url()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
-        kwargs = {
-            "timeout": 30,
-            "impersonate": "chrome"
-        }
-
-        if proxy_url:
-            kwargs["proxy"] = proxy_url
-
-        async with AsyncSession() as session:
-            response = await session.get(url, **kwargs)
+        def _download() -> bytes:
+            scraper = cloudscraper.create_scraper()
+            response = scraper.get(url, timeout=30, proxies=proxies)
             if response.status_code != 200:
                 raise Exception(f"Failed to download file: {response.status_code}")
             return response.content
+
+        return await asyncio.to_thread(_download)
     
     async def check_token_availability(self, is_image: bool, is_video: bool) -> bool:
         """Check if tokens are available for the given model type

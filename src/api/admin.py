@@ -5,6 +5,8 @@ from typing import List, Optional
 from datetime import datetime
 from pathlib import Path
 import secrets
+import asyncio
+import cloudscraper
 from pydantic import BaseModel
 from apscheduler.triggers.cron import CronTrigger
 from ..core.auth import AuthManager
@@ -963,8 +965,6 @@ async def test_proxy_config(
     token: str = Depends(verify_admin_token)
 ) -> dict:
     """Test proxy connectivity with custom URL"""
-    from curl_cffi.requests import AsyncSession
-
     config_obj = await proxy_manager.get_proxy_config()
     if not config_obj.proxy_enabled or not config_obj.proxy_url:
         return {"success": False, "message": "代理未启用或地址为空"}
@@ -973,13 +973,12 @@ async def test_proxy_config(
     test_url = request.test_url or "https://sora.chatgpt.com"
 
     try:
-        async with AsyncSession() as session:
-            response = await session.get(
-                test_url,
-                timeout=15,
-                impersonate="chrome",
-                proxy=config_obj.proxy_url
-            )
+        def _test():
+            scraper = cloudscraper.create_scraper()
+            proxies = {"http": config_obj.proxy_url, "https": config_obj.proxy_url}
+            return scraper.get(test_url, timeout=15, proxies=proxies)
+
+        response = await asyncio.to_thread(_test)
         status_code = response.status_code
         if 200 <= status_code < 400:
             return {

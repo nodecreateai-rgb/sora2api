@@ -1,7 +1,8 @@
 """POW Service Client - External POW service integration"""
 import json
+import asyncio
 from typing import Optional, Tuple
-from curl_cffi.requests import AsyncSession
+import cloudscraper
 
 from ..core.config import config
 from ..core.logger import debug_logger
@@ -9,6 +10,12 @@ from ..core.logger import debug_logger
 
 class POWServiceClient:
     """Client for external POW service API"""
+
+    @staticmethod
+    def _request_sync(url: str, headers: dict, timeout: int = 30, proxy_url: Optional[str] = None):
+        scraper = cloudscraper.create_scraper()
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        return scraper.get(url, headers=headers, timeout=timeout, proxies=proxies)
 
     async def get_sentinel_token(self) -> Optional[Tuple[str, str, str]]:
         """Get sentinel token from external POW service
@@ -41,86 +48,85 @@ class POWServiceClient:
 
         try:
             debug_logger.log_info(f"[POW Service] Requesting token from {api_url}")
+            response = await asyncio.to_thread(
+                self._request_sync,
+                api_url,
+                headers,
+                30,
+                proxy_url
+            )
 
-            async with AsyncSession(impersonate="chrome131") as session:
-                response = await session.get(
-                    api_url,
-                    headers=headers,
-                    proxy=proxy_url,
-                    timeout=30
+            if response.status_code != 200:
+                error_msg = f"POW service request failed: {response.status_code}"
+                debug_logger.log_error(
+                    error_message=error_msg,
+                    status_code=response.status_code,
+                    response_text=response.text,
+                    source="POWServiceClient"
                 )
+                return None
 
-                if response.status_code != 200:
-                    error_msg = f"POW service request failed: {response.status_code}"
-                    debug_logger.log_error(
-                        error_message=error_msg,
-                        status_code=response.status_code,
-                        response_text=response.text,
-                        source="POWServiceClient"
-                    )
-                    return None
+            data = response.json()
 
-                data = response.json()
+            if not data.get("success"):
+                debug_logger.log_error(
+                    error_message="POW service returned success=false",
+                    status_code=response.status_code,
+                    response_text=response.text,
+                    source="POWServiceClient"
+                )
+                return None
 
-                if not data.get("success"):
-                    debug_logger.log_error(
-                        error_message="POW service returned success=false",
-                        status_code=response.status_code,
-                        response_text=response.text,
-                        source="POWServiceClient"
-                    )
-                    return None
+            token = data.get("token")
+            device_id = data.get("device_id")
+            user_agent = data.get("user_agent")
+            cached = data.get("cached", False)
 
-                token = data.get("token")
-                device_id = data.get("device_id")
-                user_agent = data.get("user_agent")
-                cached = data.get("cached", False)
+            if not token:
+                debug_logger.log_error(
+                    error_message="POW service returned empty token",
+                    status_code=response.status_code,
+                    response_text=response.text,
+                    source="POWServiceClient"
+                )
+                return None
 
-                if not token:
-                    debug_logger.log_error(
-                        error_message="POW service returned empty token",
-                        status_code=response.status_code,
-                        response_text=response.text,
-                        source="POWServiceClient"
-                    )
-                    return None
+            # Parse token to extract device_id if not provided
+            token_data = None
+            if not device_id:
+                try:
+                    token_data = json.loads(token)
+                    device_id = token_data.get("id")
+                except:
+                    pass
 
-                # Parse token to extract device_id if not provided
-                token_data = None
-                if not device_id:
-                    try:
-                        token_data = json.loads(token)
-                        device_id = token_data.get("id")
-                    except:
-                        pass
+            # 记录详细的 token 信息
+            cache_status = "cached" if cached else "fresh"
+            debug_logger.log_info("=" * 100)
+            debug_logger.log_info(f"[POW Service] Token obtained successfully ({cache_status})")
+            debug_logger.log_info(f"[POW Service] Token length: {len(token)}")
+            debug_logger.log_info(f"[POW Service] Device ID: {device_id}")
+            debug_logger.log_info(f"[POW Service] User Agent: {user_agent}")
 
-                # 记录详细的 token 信息
-                cache_status = "cached" if cached else "fresh"
-                debug_logger.log_info("=" * 100)
-                debug_logger.log_info(f"[POW Service] Token obtained successfully ({cache_status})")
-                debug_logger.log_info(f"[POW Service] Token length: {len(token)}")
-                debug_logger.log_info(f"[POW Service] Device ID: {device_id}")
-                debug_logger.log_info(f"[POW Service] User Agent: {user_agent}")
+            # 解析并显示 token 结构
+            if not token_data:
+                try:
+                    token_data = json.loads(token)
+                except:
+                    debug_logger.log_info(f"[POW Service] Token is not valid JSON")
+                    token_data = None
 
-                # 解析并显示 token 结构
-                if not token_data:
-                    try:
-                        token_data = json.loads(token)
-                    except:
-                        debug_logger.log_info(f"[POW Service] Token is not valid JSON")
-                        token_data = None
+            if token_data:
+                debug_logger.log_info(f"[POW Service] Token structure keys: {list(token_data.keys())}")
+                for key, value in token_data.items():
+                    if isinstance(value, str) and len(value) > 100:
+                        debug_logger.log_info(f"[POW Service] Token[{key}]: <string, length={len(value)}>")
+                    else:
+                        debug_logger.log_info(f"[POW Service] Token[{key}]: {value}")
 
-                if token_data:
-                    debug_logger.log_info(f"[POW Service] Token structure keys: {list(token_data.keys())}")
-                    for key, value in token_data.items():
-                        if isinstance(value, str) and len(value) > 100:
-                            debug_logger.log_info(f"[POW Service] Token[{key}]: <string, length={len(value)}>")
-                        else:
-                            debug_logger.log_info(f"[POW Service] Token[{key}]: {value}")
+            debug_logger.log_info("=" * 100)
 
-                debug_logger.log_info("=" * 100)
-
-                return token, device_id, user_agent
+            return token, device_id, user_agent
 
         except Exception as e:
             debug_logger.log_error(

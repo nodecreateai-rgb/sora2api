@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
-from curl_cffi.requests import AsyncSession
+import cloudscraper
 from ..core.config import config
 from ..core.logger import debug_logger
 
@@ -154,22 +154,23 @@ class FileCache:
             if self.proxy_manager:
                 proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
-            # Download with proxy support
-            async with AsyncSession() as session:
-                kwargs = {"timeout": 60, "impersonate": "chrome"}
-                if proxy_url:
-                    kwargs["proxy"] = proxy_url
-                response = await session.get(url, **kwargs)
+            proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
+            def _download():
+                scraper = cloudscraper.create_scraper()
+                response = scraper.get(url, timeout=60, proxies=proxies)
                 if response.status_code != 200:
                     raise Exception(f"Download failed: HTTP {response.status_code}")
-                
-                # Save to cache
-                with open(file_path, 'wb') as f:
-                    f.write(response.content)
-                
-                debug_logger.log_info(f"File cached: {filename} ({len(response.content)} bytes)")
-                return filename
+                return response.content
+
+            content = await asyncio.to_thread(_download)
+
+            # Save to cache
+            with open(file_path, 'wb') as f:
+                f.write(content)
+
+            debug_logger.log_info(f"File cached: {filename} ({len(content)} bytes)")
+            return filename
                 
         except Exception as e:
             debug_logger.log_error(
@@ -214,4 +215,3 @@ class FileCache:
                 response_text=""
             )
             raise
-
