@@ -32,7 +32,7 @@ _playwright = None
 _current_proxy = None
 
 # Sentinel token cache
-_cached_sentinel_token = None
+_cached_sentinel_token_map = {}
 _cached_device_id = None
 
 
@@ -245,13 +245,19 @@ async def _get_cached_sentinel_token(proxy_url: str = None, force_refresh: bool 
     Raises:
         Exception: If 403/429 when fetching oai-did
     """
-    global _cached_sentinel_token
+    global _cached_sentinel_token_map
+
+    # Whether current request should be token-aware for POW
+    use_token_for_pow = bool(config.pow_service_use_token_for_pow and access_token)
+    cache_key = access_token if use_token_for_pow else "__default__"
 
     # Check if external POW service is configured
     if config.pow_service_mode == "external":
         debug_logger.log_info("[POW] Using external POW service (cached sentinel)")
         from .pow_service_client import pow_service_client
-        result = await pow_service_client.get_sentinel_token(access_token=access_token)
+        result = await pow_service_client.get_sentinel_token(
+            access_token=access_token if use_token_for_pow else None
+        )
 
         if result:
             sentinel_token, device_id, service_user_agent = result
@@ -263,25 +269,36 @@ async def _get_cached_sentinel_token(proxy_url: str = None, force_refresh: bool 
 
     # Local mode (original logic)
     # Return cached token if available and not forcing refresh
-    if _cached_sentinel_token and not force_refresh:
-        debug_logger.log_info("[Sentinel] Using cached token")
-        return _cached_sentinel_token
+    if not force_refresh and cache_key in _cached_sentinel_token_map:
+        if use_token_for_pow:
+            debug_logger.log_info("[Sentinel] Using token-scoped cached token")
+        else:
+            debug_logger.log_info("[Sentinel] Using shared cached token")
+        return _cached_sentinel_token_map[cache_key]
 
     # Generate new token
     debug_logger.log_info("[Sentinel] Generating new token...")
     token = await _generate_sentinel_token_lightweight(proxy_url)
 
     if token:
-        _cached_sentinel_token = token
+        _cached_sentinel_token_map[cache_key] = token
         debug_logger.log_info("[Sentinel] Token cached successfully")
 
     return token
 
 
-def _invalidate_sentinel_cache():
-    """Invalidate cached sentinel token (call after 400 error)"""
-    global _cached_sentinel_token
-    _cached_sentinel_token = None
+def _invalidate_sentinel_cache(access_token: Optional[str] = None):
+    """Invalidate cached sentinel token (call after 400 error)
+
+    Args:
+        access_token: Optional current access token for token-scoped cache invalidation
+    """
+    global _cached_sentinel_token_map
+    use_token_for_pow = bool(config.pow_service_use_token_for_pow and access_token)
+    cache_key = access_token if use_token_for_pow else "__default__"
+
+    if cache_key in _cached_sentinel_token_map:
+        del _cached_sentinel_token_map[cache_key]
     debug_logger.log_info("[Sentinel] Cache invalidated")
 
 
@@ -755,7 +772,9 @@ class SoraClient:
         # Check if external POW service is configured
         if config.pow_service_mode == "external":
             debug_logger.log_info("[Sentinel] Using external POW service...")
-            result = await pow_service_client.get_sentinel_token(access_token=token)
+            result = await pow_service_client.get_sentinel_token(
+                access_token=token if config.pow_service_use_token_for_pow else None
+            )
 
             if result:
                 sentinel_token, device_id, service_user_agent = result
@@ -1173,7 +1192,7 @@ class SoraClient:
                 debug_logger.log_info("[Sentinel] Got 400 error, refreshing token and retrying...")
                 
                 # Invalidate cache and get fresh token
-                _invalidate_sentinel_cache()
+                _invalidate_sentinel_cache(token)
                 
                 try:
                     sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=True, access_token=token)

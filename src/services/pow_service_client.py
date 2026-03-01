@@ -39,23 +39,58 @@ class POWServiceClient:
 
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "Content-Type": "application/json",
         }
 
-        # Add access_token to headers if provided
-        if access_token:
-            headers["X-Access-Token"] = access_token
+        # Controlled by config switch: whether to pass current token to POW service
+        send_access_token = bool(config.pow_service_use_token_for_pow and access_token)
+
+        def _mask_token(token_value: Optional[str]) -> str:
+            if not token_value:
+                return "none"
+            if len(token_value) <= 10:
+                return "***"
+            return f"{token_value[:6]}...{token_value[-4:]}"
+
+        debug_logger.log_info(
+            f"[POW Service] use_token_for_pow={config.pow_service_use_token_for_pow}, access_token={_mask_token(access_token)}"
+        )
 
         try:
             debug_logger.log_info(f"[POW Service] Requesting token from {api_url}")
 
             async with AsyncSession(impersonate="chrome131") as session:
-                response = await session.get(
+                # Preferred protocol: POST + JSON body
+                payload = {"flow": "sora_init"}
+                if send_access_token:
+                    payload["accesstoken"] = access_token
+
+                response = await session.post(
                     api_url,
                     headers=headers,
+                    json=payload,
                     proxy=proxy_url,
                     timeout=30
                 )
+
+                # Backward compatibility: older services may only support GET + X-Access-Token
+                if response.status_code in (404, 405, 415):
+                    fallback_headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Accept": "application/json"
+                    }
+                    if send_access_token:
+                        fallback_headers["X-Access-Token"] = access_token
+                    debug_logger.log_info(
+                        f"[POW Service] POST unsupported ({response.status_code}), fallback to GET compatibility mode"
+                    )
+                    response = await session.get(
+                        api_url,
+                        headers=fallback_headers,
+                        proxy=proxy_url,
+                        timeout=30
+                    )
 
                 if response.status_code != 200:
                     error_msg = f"POW service request failed: {response.status_code}"

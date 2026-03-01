@@ -286,6 +286,17 @@ class Config:
         self._config["pow_service"]["mode"] = mode
 
     @property
+    def pow_service_use_token_for_pow(self) -> bool:
+        """Whether to use current token for POW calculation"""
+        return self._config.get("pow_service", {}).get("use_token_for_pow", False)
+
+    def set_pow_service_use_token_for_pow(self, enabled: bool):
+        """Set whether to use current token for POW calculation"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["use_token_for_pow"] = enabled
+
+    @property
     def pow_service_server_url(self) -> str:
         """Get POW service server URL"""
         return self._config.get("pow_service", {}).get("server_url", "")

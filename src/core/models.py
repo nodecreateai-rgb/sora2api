@@ -160,6 +160,7 @@ class PowServiceConfig(BaseModel):
     """POW service configuration"""
     id: int = 1
     mode: str = "local"  # "local" or "external"
+    use_token_for_pow: bool = False  # Whether to use current token for POW calculation
     server_url: Optional[str] = None  # External POW service URL
     api_key: Optional[str] = None  # External POW service API key
     proxy_enabled: bool = False  # Whether to enable proxy for POW service

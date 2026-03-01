@@ -173,6 +173,7 @@ class UpdatePowProxyConfigRequest(BaseModel):
 
 class UpdatePowServiceConfigRequest(BaseModel):
     mode: str  # "local" or "external"
+    use_token_for_pow: Optional[bool] = False
     server_url: Optional[str] = None
     api_key: Optional[str] = None
     proxy_enabled: Optional[bool] = None
@@ -1408,6 +1409,7 @@ async def update_pow_proxy_config(
         config_obj = await db.get_pow_service_config()
         await db.update_pow_service_config(
             mode=config_obj.mode,
+            use_token_for_pow=config_obj.use_token_for_pow,
             server_url=config_obj.server_url,
             api_key=config_obj.api_key,
             proxy_enabled=request.pow_proxy_enabled,
@@ -1432,6 +1434,7 @@ async def get_pow_service_config(token: str = Depends(verify_admin_token)) -> di
         "success": True,
         "config": {
             "mode": config_obj.mode,
+            "use_token_for_pow": config_obj.use_token_for_pow,
             "server_url": config_obj.server_url or "",
             "api_key": config_obj.api_key or "",
             "proxy_enabled": config_obj.proxy_enabled,
@@ -1448,6 +1451,7 @@ async def update_pow_service_config(
     try:
         await db.update_pow_service_config(
             mode=request.mode,
+            use_token_for_pow=request.use_token_for_pow or False,
             server_url=request.server_url,
             api_key=request.api_key,
             proxy_enabled=request.proxy_enabled,
@@ -1455,6 +1459,7 @@ async def update_pow_service_config(
         )
         # Update runtime config
         config.set_pow_service_mode(request.mode)
+        config.set_pow_service_use_token_for_pow(request.use_token_for_pow or False)
         config.set_pow_service_server_url(request.server_url or "")
         config.set_pow_service_api_key(request.api_key or "")
         config.set_pow_service_proxy_enabled(request.proxy_enabled or False)

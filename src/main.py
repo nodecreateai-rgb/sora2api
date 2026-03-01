@@ -147,11 +147,12 @@ async def startup_event():
     # Load POW service configuration from database
     pow_service_config = await db.get_pow_service_config()
     config.set_pow_service_mode(pow_service_config.mode)
+    config.set_pow_service_use_token_for_pow(pow_service_config.use_token_for_pow)
     config.set_pow_service_server_url(pow_service_config.server_url or "")
     config.set_pow_service_api_key(pow_service_config.api_key or "")
     config.set_pow_service_proxy_enabled(pow_service_config.proxy_enabled)
     config.set_pow_service_proxy_url(pow_service_config.proxy_url or "")
-    print(f"✓ POW service mode: {pow_service_config.mode}")
+    print(f"✓ POW service mode: {pow_service_config.mode}, use_token_for_pow: {pow_service_config.use_token_for_pow}")
 
     # Initialize concurrency manager with all tokens
     all_tokens = await db.get_all_tokens()

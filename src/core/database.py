@@ -230,6 +230,7 @@ class Database:
         if count[0] == 0:
             # Get POW service config from config_dict if provided, otherwise use defaults
             mode = "local"
+            use_token_for_pow = False
             server_url = None
             api_key = None
             proxy_enabled = False
@@ -238,6 +239,7 @@ class Database:
             if config_dict:
                 pow_service_config = config_dict.get("pow_service", {})
                 mode = pow_service_config.get("mode", "local")
+                use_token_for_pow = pow_service_config.get("use_token_for_pow", False)
                 server_url = pow_service_config.get("server_url", "")
                 api_key = pow_service_config.get("api_key", "")
                 proxy_enabled = pow_service_config.get("proxy_enabled", False)
@@ -248,9 +250,9 @@ class Database:
                 proxy_url = proxy_url if proxy_url else None
 
             await db.execute("""
-                INSERT INTO pow_service_config (id, mode, server_url, api_key, proxy_enabled, proxy_url)
-                VALUES (1, ?, ?, ?, ?, ?)
-            """, (mode, server_url, api_key, proxy_enabled, proxy_url))
+                INSERT INTO pow_service_config (id, mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url)
+                VALUES (1, ?, ?, ?, ?, ?, ?)
+            """, (mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url))
 
 
     async def check_and_migrate_db(self, config_dict: dict = None):
@@ -318,6 +320,35 @@ class Database:
                             print(f"  ✓ Added column '{col_name}' to admin_config table")
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+            # Check and add missing columns to pow_service_config table
+            if await self._table_exists(db, "pow_service_config"):
+                added_use_token_for_pow_column = False
+                columns_to_add = [
+                    ("use_token_for_pow", "BOOLEAN DEFAULT 0"),
+                ]
+
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "pow_service_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE pow_service_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to pow_service_config table")
+                            if col_name == "use_token_for_pow":
+                                added_use_token_for_pow_column = True
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+                # On upgrade, initialize value from setting.toml only when this column is newly added
+                if config_dict and added_use_token_for_pow_column:
+                    try:
+                        use_token_for_pow = config_dict.get("pow_service", {}).get("use_token_for_pow", False)
+                        await db.execute("""
+                            UPDATE pow_service_config
+                            SET use_token_for_pow = ?
+                            WHERE id = 1
+                        """, (use_token_for_pow,))
+                    except Exception as e:
+                        print(f"  ✗ Failed to initialize use_token_for_pow from config: {e}")
 
             # Check and add missing columns to watermark_free_config table
             if await self._table_exists(db, "watermark_free_config"):
@@ -551,6 +582,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS pow_service_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     mode TEXT DEFAULT 'local',
+                    use_token_for_pow BOOLEAN DEFAULT 0,
                     server_url TEXT,
                     api_key TEXT,
                     proxy_enabled BOOLEAN DEFAULT 0,
@@ -1354,6 +1386,7 @@ class Database:
                 return PowServiceConfig(**dict(row))
             return PowServiceConfig(
                 mode="local",
+                use_token_for_pow=False,
                 server_url=None,
                 api_key=None,
                 proxy_enabled=False,
@@ -1373,6 +1406,7 @@ class Database:
     async def update_pow_service_config(
         self,
         mode: str,
+        use_token_for_pow: bool = False,
         server_url: Optional[str] = None,
         api_key: Optional[str] = None,
         proxy_enabled: Optional[bool] = None,
@@ -1382,9 +1416,9 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             # Use INSERT OR REPLACE to ensure the row exists
             await db.execute("""
-                INSERT OR REPLACE INTO pow_service_config (id, mode, server_url, api_key, proxy_enabled, proxy_url, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (mode, server_url, api_key, proxy_enabled, proxy_url))
+                INSERT OR REPLACE INTO pow_service_config (id, mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url))
             await db.commit()
 
 
