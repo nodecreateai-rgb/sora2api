@@ -40,6 +40,8 @@ auto_disable_on_401 = true
 [proxy]
 proxy_enabled = false
 proxy_url = ""
+image_upload_proxy_enabled = false
+image_upload_proxy_url = ""
 
 [watermark_free]
 watermark_free_enabled = false
@@ -63,7 +65,7 @@ timezone_offset = 8
 [pow_service]
 # beta测试，目前仍处于测试阶段
 # POW 计算模式：local（本地计算）或 external（外部服务）
-mode = "external"
+mode = "local"
 # 是否使用对应 token 进行 POW 计算（默认关闭）
 # local 模式开启后会使用当前轮询 token 获取 POW
 # external 模式开启后会向外部服务传递 accesstoken 字段

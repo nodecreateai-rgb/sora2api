@@ -36,6 +36,54 @@ _cached_sentinel_token_map = {}
 _cached_device_id = None
 
 
+def _extract_device_id_from_sentinel(sentinel_token: Optional[str]) -> Optional[str]:
+    """Extract device id from sentinel token JSON."""
+    if not sentinel_token:
+        return None
+    try:
+        data = json.loads(sentinel_token)
+        if isinstance(data, dict):
+            value = data.get("id")
+            return str(value) if value else None
+    except Exception:
+        return None
+    return None
+
+
+def _build_session_cookie_header(session_token: str) -> str:
+    """Build session cookie header used by ChatGPT/Sora requests."""
+    return f"__Secure-next-auth.session-token={session_token}"
+
+
+async def _resolve_session_token(
+    access_token: Optional[str] = None,
+    token_id: Optional[int] = None,
+) -> Optional[str]:
+    """Resolve session token (st) from token_id or access token."""
+    if not token_id and not access_token:
+        return None
+
+    try:
+        from ..core.database import Database
+
+        db = Database()
+        token_obj = None
+
+        if token_id:
+            token_obj = await db.get_token(token_id)
+
+        # Fallback by access token if token_id is unavailable or has no st
+        if (not token_obj or not token_obj.st) and access_token:
+            token_obj = await db.get_token_by_value(access_token)
+
+        if token_obj and token_obj.st:
+            return token_obj.st
+    except Exception as e:
+        debug_logger.log_warning(f"[Sentinel] Failed to resolve session token: {e}")
+
+    return None
+
+
 async def _get_browser(proxy_url: str = None):
     """Get or create browser instance (reuses existing browser)"""
     global _browser, _playwright, _current_proxy
@@ -81,7 +129,12 @@ async def _close_browser():
         _playwright = None
 
 
-async def _fetch_oai_did(proxy_url: str = None, max_retries: int = 3) -> str:
+async def _fetch_oai_did(
+    proxy_url: str = None,
+    max_retries: int = 3,
+    session_token: Optional[str] = None,
+    cookie_header: Optional[str] = None,
+) -> str:
     """Fetch oai-did using curl_cffi (lightweight approach)
     
     Raises:
@@ -92,8 +145,15 @@ async def _fetch_oai_did(proxy_url: str = None, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
             async with AsyncSession(impersonate="chrome120") as session:
+                headers = None
+                if cookie_header:
+                    headers = {"Cookie": cookie_header}
+                elif session_token:
+                    headers = {"Cookie": _build_session_cookie_header(session_token)}
+
                 response = await session.get(
                     "https://chatgpt.com/",
+                    headers=headers,
                     proxy=proxy_url,
                     timeout=30,
                     allow_redirects=True
@@ -130,7 +190,11 @@ async def _fetch_oai_did(proxy_url: str = None, max_retries: int = 3) -> str:
     return None
 
 
-async def _generate_sentinel_token_lightweight(proxy_url: str = None, device_id: str = None) -> str:
+async def _generate_sentinel_token_lightweight(
+    proxy_url: str = None,
+    device_id: str = None,
+    session_token: Optional[str] = None,
+) -> str:
     """Generate sentinel token using lightweight Playwright approach
     
     Uses route interception and SDK injection for minimal resource usage.
@@ -154,7 +218,7 @@ async def _generate_sentinel_token_lightweight(proxy_url: str = None, device_id:
     
     # Get oai-did
     if not device_id:
-        device_id = await _fetch_oai_did(proxy_url)
+        device_id = await _fetch_oai_did(proxy_url, session_token=session_token)
     
     if not device_id:
         debug_logger.log_info("[Sentinel] Failed to get oai-did")
@@ -171,13 +235,24 @@ async def _generate_sentinel_token_lightweight(proxy_url: str = None, device_id:
         bypass_csp=True
     )
     
-    # Set cookie
-    await context.add_cookies([{
+    # Set oai-did cookie (+ session cookie when token-aware POW is enabled)
+    cookies_to_set = [{
         'name': 'oai-did',
         'value': device_id,
         'domain': 'sora.chatgpt.com',
         'path': '/'
-    }])
+    }]
+    if session_token:
+        cookies_to_set.append({
+            'name': '__Secure-next-auth.session-token',
+            'value': session_token,
+            'domain': '.chatgpt.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'sameSite': 'None',
+        })
+    await context.add_cookies(cookies_to_set)
     
     page = await context.new_page()
     
@@ -231,16 +306,22 @@ async def _generate_sentinel_token_lightweight(proxy_url: str = None, device_id:
         await context.close()
 
 
-async def _get_cached_sentinel_token(proxy_url: str = None, force_refresh: bool = False, access_token: Optional[str] = None) -> str:
+async def _get_cached_sentinel_token(
+    proxy_url: str = None,
+    force_refresh: bool = False,
+    access_token: Optional[str] = None,
+    token_id: Optional[int] = None,
+) -> Optional[Dict[str, Optional[str]]]:
     """Get sentinel token with caching support
 
     Args:
         proxy_url: Optional proxy URL
         force_refresh: Force refresh token (e.g., after 400 error)
         access_token: Optional access token to send to external POW service
+        token_id: Optional token id to resolve session token for local POW
 
     Returns:
-        Sentinel token string or None
+        Dict with sentinel_token/device_id/user_agent/cookie_header or None
 
     Raises:
         Exception: If 403/429 when fetching oai-did
@@ -248,43 +329,82 @@ async def _get_cached_sentinel_token(proxy_url: str = None, force_refresh: bool 
     global _cached_sentinel_token_map
 
     # Whether current request should be token-aware for POW
-    use_token_for_pow = bool(config.pow_service_use_token_for_pow and access_token)
-    cache_key = access_token if use_token_for_pow else "__default__"
+    use_token_for_pow = bool(config.pow_service_use_token_for_pow and (access_token or token_id))
+    disable_cache_for_local_token_pow = bool(use_token_for_pow and config.pow_service_mode == "local")
+    if use_token_for_pow and access_token:
+        cache_key = access_token
+    elif use_token_for_pow and token_id:
+        cache_key = f"token_id:{token_id}"
+    else:
+        cache_key = "__default__"
+    session_token = await _resolve_session_token(access_token=access_token, token_id=token_id) if use_token_for_pow else None
 
     # Check if external POW service is configured
     if config.pow_service_mode == "external":
         debug_logger.log_info("[POW] Using external POW service (cached sentinel)")
-        from .pow_service_client import pow_service_client
         result = await pow_service_client.get_sentinel_token(
-            access_token=access_token if use_token_for_pow else None
+            access_token=access_token if use_token_for_pow else None,
+            session_token=session_token if use_token_for_pow else None,
+            proxy_url=proxy_url,
         )
 
         if result:
-            sentinel_token, device_id, service_user_agent = result
+            sentinel_data = {
+                "sentinel_token": result.sentinel_token,
+                "device_id": result.device_id or _extract_device_id_from_sentinel(result.sentinel_token),
+                "user_agent": result.user_agent,
+                "cookie_header": result.cookie_header,
+            }
             debug_logger.log_info("[POW] External service returned sentinel token successfully")
-            return sentinel_token
+            return sentinel_data
         else:
             # Fallback to local mode if external service fails
             debug_logger.log_info("[POW] External service failed, falling back to local mode")
 
-    # Local mode (original logic)
-    # Return cached token if available and not forcing refresh
-    if not force_refresh and cache_key in _cached_sentinel_token_map:
+    # Local mode
+    # local + token-aware POW: do not use cache (compute each time)
+    if disable_cache_for_local_token_pow:
+        debug_logger.log_info("[Sentinel] Local token-aware POW enabled, cache bypassed")
+    # Otherwise keep legacy cache behavior
+    elif not force_refresh and cache_key in _cached_sentinel_token_map:
         if use_token_for_pow:
             debug_logger.log_info("[Sentinel] Using token-scoped cached token")
         else:
             debug_logger.log_info("[Sentinel] Using shared cached token")
-        return _cached_sentinel_token_map[cache_key]
+        cached_value = _cached_sentinel_token_map[cache_key]
+        # Backward compatibility: migrate legacy string cache to structured cache.
+        if isinstance(cached_value, str):
+            cached_value = {
+                "sentinel_token": cached_value,
+                "device_id": _extract_device_id_from_sentinel(cached_value),
+                "user_agent": None,
+                "cookie_header": None,
+            }
+            _cached_sentinel_token_map[cache_key] = cached_value
+        return cached_value
 
     # Generate new token
     debug_logger.log_info("[Sentinel] Generating new token...")
-    token = await _generate_sentinel_token_lightweight(proxy_url)
+    token = await _generate_sentinel_token_lightweight(
+        proxy_url=proxy_url,
+        session_token=session_token if use_token_for_pow else None,
+    )
 
     if token:
-        _cached_sentinel_token_map[cache_key] = token
-        debug_logger.log_info("[Sentinel] Token cached successfully")
+        sentinel_data = {
+            "sentinel_token": token,
+            "device_id": _extract_device_id_from_sentinel(token),
+            "user_agent": None,
+            "cookie_header": None,
+        }
+        if not disable_cache_for_local_token_pow:
+            _cached_sentinel_token_map[cache_key] = sentinel_data
+            debug_logger.log_info("[Sentinel] Token cached successfully")
+        else:
+            debug_logger.log_info("[Sentinel] Local token-aware POW generated (not cached)")
+        return sentinel_data
 
-    return token
+    return None
 
 
 def _invalidate_sentinel_cache(access_token: Optional[str] = None):
@@ -632,9 +752,17 @@ class SoraClient:
             )
             return None
 
-    async def _nf_create_urllib(self, token: str, payload: dict, sentinel_token: str,
-                                proxy_url: Optional[str], token_id: Optional[int] = None,
-                                user_agent: Optional[str] = None) -> Dict[str, Any]:
+    async def _nf_create_urllib(
+        self,
+        token: str,
+        payload: dict,
+        sentinel_token: str,
+        proxy_url: Optional[str],
+        token_id: Optional[int] = None,
+        user_agent: Optional[str] = None,
+        device_id: Optional[str] = None,
+        cookie_header: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Make nf/create request
 
         Returns:
@@ -647,9 +775,17 @@ class SoraClient:
         if not user_agent:
             user_agent = random.choice(DESKTOP_USER_AGENTS)
 
-        import json as json_mod
-        sentinel_data = json_mod.loads(sentinel_token)
-        device_id = sentinel_data.get("id", str(uuid4()))
+        sentinel_data = {}
+        if not device_id:
+            device_id = _extract_device_id_from_sentinel(sentinel_token)
+        if not device_id:
+            device_id = str(uuid4())
+        try:
+            parsed_data = json.loads(sentinel_token)
+            if isinstance(parsed_data, dict):
+                sentinel_data = parsed_data
+        except Exception:
+            sentinel_data = {}
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -674,7 +810,10 @@ class SoraClient:
         }
 
         # 添加 Cookie 头（关键修复）
-        if token_id:
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+            debug_logger.log_info(f"[nf/create] Using cookie header from POW service (length: {len(cookie_header)})")
+        elif token_id:
             try:
                 from src.core.database import Database
                 db = Database()
@@ -762,31 +901,46 @@ class SoraClient:
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
 
-    async def _generate_sentinel_token(self, token: Optional[str] = None, user_agent: Optional[str] = None) -> Tuple[str, str]:
+    async def _generate_sentinel_token(
+        self,
+        token: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        pow_proxy_url: Optional[str] = None,
+        token_id: Optional[int] = None,
+    ) -> Dict[str, Optional[str]]:
         """Generate openai-sentinel-token by calling /backend-api/sentinel/req and solving PoW
 
         Supports two modes:
         - external: Get complete sentinel token from external POW service
         - local: Generate POW locally and call sentinel/req endpoint
         """
+        use_token_for_pow = bool(config.pow_service_use_token_for_pow and (token or token_id))
+        session_token = await _resolve_session_token(access_token=token, token_id=token_id) if use_token_for_pow else None
+
         # Check if external POW service is configured
         if config.pow_service_mode == "external":
             debug_logger.log_info("[Sentinel] Using external POW service...")
             result = await pow_service_client.get_sentinel_token(
-                access_token=token if config.pow_service_use_token_for_pow else None
+                access_token=token if use_token_for_pow else None,
+                session_token=session_token if use_token_for_pow else None,
+                proxy_url=pow_proxy_url,
             )
 
             if result:
-                sentinel_token, device_id, service_user_agent = result
                 # Use service user agent if provided, otherwise use default
-                final_user_agent = service_user_agent if service_user_agent else (
+                final_user_agent = result.user_agent if result.user_agent else (
                     user_agent if user_agent else
                     "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
                 )
 
                 debug_logger.log_info(f"[Sentinel] Got token from external service")
                 debug_logger.log_info(f"[Sentinel] Token cached successfully (external)")
-                return sentinel_token, final_user_agent
+                return {
+                    "sentinel_token": result.sentinel_token,
+                    "user_agent": final_user_agent,
+                    "device_id": result.device_id or _extract_device_id_from_sentinel(result.sentinel_token),
+                    "cookie_header": result.cookie_header,
+                }
             else:
                 # Fallback to local mode if external service fails
                 debug_logger.log_info("[Sentinel] External service failed, falling back to local mode")
@@ -806,7 +960,7 @@ class SoraClient:
         }
         ua_with_pow = f"{user_agent} {json.dumps(init_payload, separators=(',', ':'))}"
 
-        proxy_url = await self.proxy_manager.get_proxy_url()
+        proxy_url = pow_proxy_url or await self.proxy_manager.get_proxy_url(token_id)
 
         # Request sentinel/req endpoint
         url = f"{self.CHATGPT_BASE_URL}/backend-api/sentinel/req"
@@ -827,6 +981,9 @@ class SoraClient:
             "sec-ch-ua-mobile": "?1",
             "sec-ch-ua-platform": '"Android"',
         }
+        if use_token_for_pow and session_token:
+            headers["Cookie"] = _build_session_cookie_header(session_token)
+            debug_logger.log_info("[Sentinel] Local mode enabled token-aware cookie for sentinel/req")
 
         try:
             async with AsyncSession(impersonate="chrome131") as session:
@@ -860,7 +1017,12 @@ class SoraClient:
         parsed = json.loads(sentinel_token)
         debug_logger.log_info(f"Final sentinel: p_prefix={parsed['p'][:10]}, p_suffix={parsed['p'][-5:]}, t_len={len(parsed['t'])}, c_len={len(parsed['c'])}, flow={parsed['flow']}")
 
-        return sentinel_token, user_agent
+        return {
+            "sentinel_token": sentinel_token,
+            "user_agent": user_agent,
+            "device_id": _extract_device_id_from_sentinel(sentinel_token),
+            "cookie_header": None,
+        }
 
     @staticmethod
     def is_storyboard_prompt(prompt: str) -> bool:
@@ -928,7 +1090,8 @@ class SoraClient:
                            json_data: Optional[Dict] = None,
                            multipart: Optional[Dict] = None,
                            add_sentinel_token: bool = False,
-                           token_id: Optional[int] = None) -> Dict[str, Any]:
+                           token_id: Optional[int] = None,
+                           use_image_upload_proxy: bool = False) -> Dict[str, Any]:
         """Make HTTP request with proxy support
 
         Args:
@@ -939,8 +1102,12 @@ class SoraClient:
             multipart: Multipart form data (for file uploads)
             add_sentinel_token: Whether to add openai-sentinel-token header (only for generation requests)
             token_id: Token ID for getting token-specific proxy (optional)
+            use_image_upload_proxy: Whether to use dedicated image upload proxy selection
         """
-        proxy_url = await self.proxy_manager.get_proxy_url(token_id)
+        if use_image_upload_proxy:
+            proxy_url = await self.proxy_manager.get_image_upload_proxy_url(token_id)
+        else:
+            proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -949,9 +1116,14 @@ class SoraClient:
 
         # 只在生成请求时添加 sentinel token
         if add_sentinel_token:
-            sentinel_token, ua = await self._generate_sentinel_token(token)
-            headers["openai-sentinel-token"] = sentinel_token
-            headers["User-Agent"] = ua
+            sentinel_context = await self._generate_sentinel_token(token, token_id=token_id)
+            headers["openai-sentinel-token"] = sentinel_context["sentinel_token"]
+            if sentinel_context.get("user_agent"):
+                headers["User-Agent"] = sentinel_context["user_agent"]
+            if sentinel_context.get("device_id"):
+                headers["oai-device-id"] = sentinel_context["device_id"]
+            if sentinel_context.get("cookie_header"):
+                headers["Cookie"] = sentinel_context["cookie_header"]
 
         if not multipart:
             headers["Content-Type"] = "application/json"
@@ -1055,7 +1227,13 @@ class SoraClient:
         """Get user information"""
         return await self._make_request("GET", "/me", token)
     
-    async def upload_image(self, image_data: bytes, token: str, filename: str = "image.png") -> str:
+    async def upload_image(
+        self,
+        image_data: bytes,
+        token: str,
+        filename: str = "image.png",
+        token_id: Optional[int] = None
+    ) -> str:
         """Upload image and return media_id
 
         使用 CurlMime 对象上传文件（curl_cffi 的正确方式）
@@ -1085,7 +1263,14 @@ class SoraClient:
             data=filename.encode('utf-8')
         )
 
-        result = await self._make_request("POST", "/uploads", token, multipart=mp)
+        result = await self._make_request(
+            "POST",
+            "/uploads",
+            token,
+            multipart=mp,
+            token_id=token_id,
+            use_image_upload_proxy=True
+        )
         return result["id"]
     
     async def generate_image(self, prompt: str, token: str, width: int = 360,
@@ -1161,7 +1346,12 @@ class SoraClient:
 
         # Try to get cached sentinel token first (using lightweight Playwright approach)
         try:
-            sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=False, access_token=token)
+            sentinel_context = await _get_cached_sentinel_token(
+                pow_proxy_url,
+                force_refresh=False,
+                access_token=token,
+                token_id=token_id,
+            )
         except Exception as e:
             # 403/429 errors from oai-did fetch - don't retry, just fail
             error_str = str(e)
@@ -1173,16 +1363,30 @@ class SoraClient:
                     source="Server"
                 )
                 raise
-            sentinel_token = None
+            sentinel_context = None
 
-        if not sentinel_token:
+        if not sentinel_context:
             # Fallback to manual POW if lightweight approach fails
             debug_logger.log_info("[Warning] Lightweight sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token)
+            sentinel_context = await self._generate_sentinel_token(
+                token,
+                user_agent=user_agent,
+                pow_proxy_url=pow_proxy_url,
+                token_id=token_id,
+            )
 
         # First attempt with cached/generated token
         try:
-            result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
+            result = await self._nf_create_urllib(
+                token,
+                json_data,
+                sentinel_context["sentinel_token"],
+                proxy_url,
+                token_id,
+                sentinel_context.get("user_agent") or user_agent,
+                sentinel_context.get("device_id"),
+                sentinel_context.get("cookie_header"),
+            )
             return result["id"]
         except Exception as e:
             error_str = str(e)
@@ -1195,21 +1399,40 @@ class SoraClient:
                 _invalidate_sentinel_cache(token)
                 
                 try:
-                    sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=True, access_token=token)
+                    sentinel_context = await _get_cached_sentinel_token(
+                        pow_proxy_url,
+                        force_refresh=True,
+                        access_token=token,
+                        token_id=token_id,
+                    )
                 except Exception as refresh_e:
                     # 403/429 errors - don't continue
                     error_str = str(refresh_e)
                     if "403" in error_str or "429" in error_str:
                         raise refresh_e
-                    sentinel_token = None
+                    sentinel_context = None
                 
-                if not sentinel_token:
+                if not sentinel_context:
                     # Fallback to manual POW
                     debug_logger.log_info("[Warning] Refresh failed, falling back to manual POW")
-                    sentinel_token, user_agent = await self._generate_sentinel_token(token)
+                    sentinel_context = await self._generate_sentinel_token(
+                        token,
+                        user_agent=user_agent,
+                        pow_proxy_url=pow_proxy_url,
+                        token_id=token_id,
+                    )
                 
                 # Retry with fresh token
-                result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
+                result = await self._nf_create_urllib(
+                    token,
+                    json_data,
+                    sentinel_context["sentinel_token"],
+                    proxy_url,
+                    token_id,
+                    sentinel_context.get("user_agent") or user_agent,
+                    sentinel_context.get("device_id"),
+                    sentinel_context.get("cookie_header"),
+                )
                 return result["id"]
             
             # For other errors, just re-raise
@@ -1560,7 +1783,12 @@ class SoraClient:
         await self._make_request("POST", f"/project_y/cameos/by_id/{cameo_id}/update_v2", token, json_data=json_data)
         return True
 
-    async def upload_character_image(self, image_data: bytes, token: str) -> str:
+    async def upload_character_image(
+        self,
+        image_data: bytes,
+        token: str,
+        token_id: Optional[int] = None
+    ) -> str:
         """Upload character image and return asset_pointer
 
         Args:
@@ -1582,7 +1810,14 @@ class SoraClient:
             data=b"profile"
         )
 
-        result = await self._make_request("POST", "/project_y/file/upload", token, multipart=mp)
+        result = await self._make_request(
+            "POST",
+            "/project_y/file/upload",
+            token,
+            multipart=mp,
+            token_id=token_id,
+            use_image_upload_proxy=True
+        )
         return result.get("asset_pointer")
 
     async def delete_character(self, character_id: str, token: str) -> bool:
@@ -1648,8 +1883,16 @@ class SoraClient:
 
         # Generate sentinel token and call /nf/create using urllib
         proxy_url = await self.proxy_manager.get_proxy_url()
-        sentinel_token, user_agent = await self._generate_sentinel_token(token)
-        result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, user_agent=user_agent)
+        sentinel_context = await self._generate_sentinel_token(token)
+        result = await self._nf_create_urllib(
+            token,
+            json_data,
+            sentinel_context["sentinel_token"],
+            proxy_url,
+            user_agent=sentinel_context.get("user_agent"),
+            device_id=sentinel_context.get("device_id"),
+            cookie_header=sentinel_context.get("cookie_header"),
+        )
         return result.get("id")
 
     async def extend_video(self, generation_id: str, prompt: str, extension_duration_s: int,

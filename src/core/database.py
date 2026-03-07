@@ -83,18 +83,25 @@ class Database:
             # Get proxy config from config_dict if provided, otherwise use defaults
             proxy_enabled = False
             proxy_url = None
+            image_upload_proxy_enabled = False
+            image_upload_proxy_url = None
 
             if config_dict:
                 proxy_config = config_dict.get("proxy", {})
                 proxy_enabled = proxy_config.get("proxy_enabled", False)
                 proxy_url = proxy_config.get("proxy_url", "")
+                image_upload_proxy_enabled = proxy_config.get("image_upload_proxy_enabled", False)
+                image_upload_proxy_url = proxy_config.get("image_upload_proxy_url", "")
                 # Convert empty string to None
                 proxy_url = proxy_url if proxy_url else None
+                image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
 
             await db.execute("""
-                INSERT INTO proxy_config (id, proxy_enabled, proxy_url)
-                VALUES (1, ?, ?)
-            """, (proxy_enabled, proxy_url))
+                INSERT INTO proxy_config (
+                    id, proxy_enabled, proxy_url, image_upload_proxy_enabled, image_upload_proxy_url
+                )
+                VALUES (1, ?, ?, ?, ?)
+            """, (proxy_enabled, proxy_url, image_upload_proxy_enabled, image_upload_proxy_url))
 
         # Ensure watermark_free_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM watermark_free_config")
@@ -187,6 +194,7 @@ class Database:
             # Get call logic config from config_dict if provided, otherwise use defaults
             call_mode = "default"
             polling_mode_enabled = False
+            poll_interval = 2.5
 
             if config_dict:
                 call_logic_config = config_dict.get("call_logic", {})
@@ -199,10 +207,22 @@ class Database:
                 else:
                     polling_mode_enabled = call_mode == "polling"
 
+                sora_config = config_dict.get("sora", {})
+                poll_interval = sora_config.get("poll_interval", 2.5)
+                if "poll_interval" in call_logic_config:
+                    poll_interval = call_logic_config.get("poll_interval", poll_interval)
+
+            try:
+                poll_interval = float(poll_interval)
+            except (TypeError, ValueError):
+                poll_interval = 2.5
+            if poll_interval <= 0:
+                poll_interval = 2.5
+
             await db.execute("""
-                INSERT INTO call_logic_config (id, call_mode, polling_mode_enabled)
-                VALUES (1, ?, ?)
-            """, (call_mode, polling_mode_enabled))
+                INSERT INTO call_logic_config (id, call_mode, polling_mode_enabled, poll_interval)
+                VALUES (1, ?, ?, ?)
+            """, (call_mode, polling_mode_enabled, poll_interval))
 
         # Ensure pow_proxy_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM pow_proxy_config")
@@ -321,6 +341,42 @@ class Database:
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
+            # Check and add missing columns to proxy_config table
+            if await self._table_exists(db, "proxy_config"):
+                added_image_upload_proxy_enabled_column = False
+                added_image_upload_proxy_url_column = False
+                columns_to_add = [
+                    ("image_upload_proxy_enabled", "BOOLEAN DEFAULT 0"),
+                    ("image_upload_proxy_url", "TEXT"),
+                ]
+
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "proxy_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE proxy_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to proxy_config table")
+                            if col_name == "image_upload_proxy_enabled":
+                                added_image_upload_proxy_enabled_column = True
+                            if col_name == "image_upload_proxy_url":
+                                added_image_upload_proxy_url_column = True
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+                # On upgrade, initialize value from setting.toml only when columns are newly added
+                if config_dict and (added_image_upload_proxy_enabled_column or added_image_upload_proxy_url_column):
+                    try:
+                        proxy_config = config_dict.get("proxy", {})
+                        image_upload_proxy_enabled = proxy_config.get("image_upload_proxy_enabled", False)
+                        image_upload_proxy_url = proxy_config.get("image_upload_proxy_url", "")
+                        image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
+                        await db.execute("""
+                            UPDATE proxy_config
+                            SET image_upload_proxy_enabled = ?, image_upload_proxy_url = ?
+                            WHERE id = 1
+                        """, (image_upload_proxy_enabled, image_upload_proxy_url))
+                    except Exception as e:
+                        print(f"  ✗ Failed to initialize image upload proxy config from config: {e}")
+
             # Check and add missing columns to pow_service_config table
             if await self._table_exists(db, "pow_service_config"):
                 added_use_token_for_pow_column = False
@@ -349,6 +405,38 @@ class Database:
                         """, (use_token_for_pow,))
                     except Exception as e:
                         print(f"  ✗ Failed to initialize use_token_for_pow from config: {e}")
+
+            # Check and add missing columns to call_logic_config table
+            if await self._table_exists(db, "call_logic_config"):
+                added_poll_interval_column = False
+                columns_to_add = [
+                    ("poll_interval", "REAL DEFAULT 2.5"),
+                ]
+
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "call_logic_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE call_logic_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to call_logic_config table")
+                            if col_name == "poll_interval":
+                                added_poll_interval_column = True
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+                # On upgrade, initialize value from setting.toml only when this column is newly added
+                if config_dict and added_poll_interval_column:
+                    try:
+                        poll_interval = config_dict.get("sora", {}).get("poll_interval", 2.5)
+                        poll_interval = float(poll_interval)
+                        if poll_interval <= 0:
+                            poll_interval = 2.5
+                        await db.execute("""
+                            UPDATE call_logic_config
+                            SET poll_interval = ?
+                            WHERE id = 1
+                        """, (poll_interval,))
+                    except Exception as e:
+                        print(f"  ✗ Failed to initialize poll_interval from config: {e}")
 
             # Check and add missing columns to watermark_free_config table
             if await self._table_exists(db, "watermark_free_config"):
@@ -389,8 +477,13 @@ class Database:
             await db.commit()
             print("Database migration check completed.")
 
-    async def init_db(self):
-        """Initialize database tables - creates all tables and ensures data integrity"""
+    async def init_db(self, config_dict: dict = None):
+        """Initialize database tables - creates all tables and ensures data integrity
+
+        Args:
+            config_dict: Configuration dictionary from setting.toml (optional).
+                        Used to initialize newly-added proxy columns during migration.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             # Tokens table
             await db.execute("""
@@ -503,6 +596,8 @@ class Database:
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     proxy_enabled BOOLEAN DEFAULT 0,
                     proxy_url TEXT,
+                    image_upload_proxy_enabled BOOLEAN DEFAULT 0,
+                    image_upload_proxy_url TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -561,6 +656,7 @@ class Database:
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     call_mode TEXT DEFAULT 'default',
                     polling_mode_enabled BOOLEAN DEFAULT 0,
+                    poll_interval REAL DEFAULT 2.5,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -618,6 +714,28 @@ class Database:
                 await db.execute("ALTER TABLE admin_config ADD COLUMN task_max_retries INTEGER DEFAULT 3")
             if not await self._column_exists(db, "admin_config", "auto_disable_on_401"):
                 await db.execute("ALTER TABLE admin_config ADD COLUMN auto_disable_on_401 BOOLEAN DEFAULT 1")
+
+            # Migration: Add image upload proxy columns to proxy_config table if they don't exist
+            added_image_upload_proxy_enabled_column = False
+            added_image_upload_proxy_url_column = False
+            if not await self._column_exists(db, "proxy_config", "image_upload_proxy_enabled"):
+                await db.execute("ALTER TABLE proxy_config ADD COLUMN image_upload_proxy_enabled BOOLEAN DEFAULT 0")
+                added_image_upload_proxy_enabled_column = True
+            if not await self._column_exists(db, "proxy_config", "image_upload_proxy_url"):
+                await db.execute("ALTER TABLE proxy_config ADD COLUMN image_upload_proxy_url TEXT")
+                added_image_upload_proxy_url_column = True
+
+            # If migration added image upload proxy columns, initialize them from setting.toml defaults
+            if config_dict and (added_image_upload_proxy_enabled_column or added_image_upload_proxy_url_column):
+                proxy_config = config_dict.get("proxy", {})
+                image_upload_proxy_enabled = proxy_config.get("image_upload_proxy_enabled", False)
+                image_upload_proxy_url = proxy_config.get("image_upload_proxy_url", "")
+                image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
+                await db.execute("""
+                    UPDATE proxy_config
+                    SET image_upload_proxy_enabled = ?, image_upload_proxy_url = ?
+                    WHERE id = 1
+                """, (image_upload_proxy_enabled, image_upload_proxy_url))
 
             # Migration: Add disabled_reason column to tokens table if it doesn't exist
             if not await self._column_exists(db, "tokens", "disabled_reason"):
@@ -1188,14 +1306,26 @@ class Database:
             # This should not happen in normal operation as _ensure_config_rows should create it
             return ProxyConfig(proxy_enabled=False)
     
-    async def update_proxy_config(self, enabled: bool, proxy_url: Optional[str]):
+    async def update_proxy_config(
+        self,
+        enabled: bool,
+        proxy_url: Optional[str],
+        image_upload_proxy_enabled: bool = False,
+        image_upload_proxy_url: Optional[str] = None
+    ):
         """Update proxy configuration"""
+        proxy_url = proxy_url if proxy_url else None
+        image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 UPDATE proxy_config
-                SET proxy_enabled = ?, proxy_url = ?, updated_at = CURRENT_TIMESTAMP
+                SET proxy_enabled = ?,
+                    proxy_url = ?,
+                    image_upload_proxy_enabled = ?,
+                    image_upload_proxy_url = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            """, (enabled, proxy_url))
+            """, (enabled, proxy_url, image_upload_proxy_enabled, image_upload_proxy_url))
             await db.commit()
 
     # Watermark-free config operations
@@ -1348,19 +1478,46 @@ class Database:
                 row_dict = dict(row)
                 if not row_dict.get("call_mode"):
                     row_dict["call_mode"] = "polling" if row_dict.get("polling_mode_enabled") else "default"
+                poll_interval = row_dict.get("poll_interval", 2.5)
+                try:
+                    poll_interval = float(poll_interval)
+                except (TypeError, ValueError):
+                    poll_interval = 2.5
+                if poll_interval <= 0:
+                    poll_interval = 2.5
+                row_dict["poll_interval"] = poll_interval
                 return CallLogicConfig(**row_dict)
-            return CallLogicConfig(call_mode="default", polling_mode_enabled=False)
+            return CallLogicConfig(call_mode="default", polling_mode_enabled=False, poll_interval=2.5)
 
-    async def update_call_logic_config(self, call_mode: str):
+    async def update_call_logic_config(self, call_mode: str, poll_interval: Optional[float] = None):
         """Update call logic configuration"""
         normalized = "polling" if call_mode == "polling" else "default"
         polling_mode_enabled = normalized == "polling"
         async with aiosqlite.connect(self.db_path) as db:
+            effective_poll_interval = 2.5
+            cursor = await db.execute("SELECT poll_interval FROM call_logic_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row and row[0] is not None:
+                try:
+                    effective_poll_interval = float(row[0])
+                except (TypeError, ValueError):
+                    effective_poll_interval = 2.5
+            if effective_poll_interval <= 0:
+                effective_poll_interval = 2.5
+
+            if poll_interval is not None:
+                try:
+                    effective_poll_interval = float(poll_interval)
+                except (TypeError, ValueError):
+                    effective_poll_interval = 2.5
+                if effective_poll_interval <= 0:
+                    effective_poll_interval = 2.5
+
             # Use INSERT OR REPLACE to ensure the row exists
             await db.execute("""
-                INSERT OR REPLACE INTO call_logic_config (id, call_mode, polling_mode_enabled, updated_at)
-                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
-            """, (normalized, polling_mode_enabled))
+                INSERT OR REPLACE INTO call_logic_config (id, call_mode, polling_mode_enabled, poll_interval, updated_at)
+                VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (normalized, polling_mode_enabled, effective_poll_interval))
             await db.commit()
 
     # POW proxy config operations

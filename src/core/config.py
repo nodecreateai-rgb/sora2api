@@ -56,6 +56,12 @@ class Config:
     @property
     def poll_interval(self) -> float:
         return self._config["sora"]["poll_interval"]
+
+    def set_poll_interval(self, interval: float):
+        """Set task progress polling interval in seconds"""
+        if "sora" not in self._config:
+            self._config["sora"] = {}
+        self._config["sora"]["poll_interval"] = float(interval)
     
     @property
     def max_poll_attempts(self) -> int:

@@ -103,7 +103,7 @@ async def startup_event():
     is_first_startup = not db.db_exists()
 
     # Initialize database tables
-    await db.init_db()
+    await db.init_db(config_dict)
 
     # Handle database initialization based on startup type
     if is_first_startup:
@@ -142,7 +142,8 @@ async def startup_event():
     # Load call logic configuration from database
     call_logic_config = await db.get_call_logic_config()
     config.set_call_logic_mode(call_logic_config.call_mode)
-    print(f"✓ Call logic mode: {call_logic_config.call_mode}")
+    config.set_poll_interval(call_logic_config.poll_interval)
+    print(f"✓ Call logic mode: {call_logic_config.call_mode}, poll_interval: {call_logic_config.poll_interval}s")
 
     # Load POW service configuration from database
     pow_service_config = await db.get_pow_service_config()
