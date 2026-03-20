@@ -10,6 +10,7 @@ WORKDIR /app
 
 # Install system dependencies for Playwright
 RUN apt-get update && apt-get install -y \
+    git \
     wget \
     gnupg \
     ca-certificates \
