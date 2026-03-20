@@ -1,9 +1,9 @@
 """POW Service Client - External POW service integration (POST /api/v1/sora/sentinel-token)"""
 from typing import NamedTuple, Optional
-from curl_cffi.requests import AsyncSession
 
 from ..core.config import config
 from ..core.logger import debug_logger
+from .cloudscraper_session import CloudScraperSession
 
 
 class SentinelResult(NamedTuple):
@@ -77,7 +77,7 @@ class POWServiceClient:
         )
 
         try:
-            async with AsyncSession(impersonate="chrome131") as session:
+            async with CloudScraperSession() as session:
                 response = await session.post(
                     api_url,
                     headers=headers,

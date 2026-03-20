@@ -13,10 +13,9 @@ from typing import Optional, Dict, Any, Tuple, List
 from uuid import uuid4
 import cloudscraper
 from requests import RequestException
-from curl_cffi.requests import AsyncSession
-from curl_cffi import CurlMime
 from .proxy_manager import ProxyManager
 from .pow_service_client import pow_service_client
+from .cloudscraper_session import CloudScraperSession
 from ..core.config import config
 from ..core.logger import debug_logger
 
@@ -135,7 +134,7 @@ async def _fetch_oai_did(
     session_token: Optional[str] = None,
     cookie_header: Optional[str] = None,
 ) -> str:
-    """Fetch oai-did using curl_cffi (lightweight approach)
+    """Fetch oai-did using cloudscraper (lightweight approach)
     
     Raises:
         Exception: If 403 or 429 response received
@@ -144,7 +143,7 @@ async def _fetch_oai_did(
     
     for attempt in range(max_retries):
         try:
-            async with AsyncSession(impersonate="chrome120") as session:
+            async with CloudScraperSession() as session:
                 headers = None
                 if cookie_header:
                     headers = {"Cookie": cookie_header}
@@ -984,7 +983,7 @@ class SoraClient:
             debug_logger.log_info("[Sentinel] Local mode enabled token-aware cookie for sentinel/req")
 
         try:
-            async with AsyncSession(impersonate="chrome131") as session:
+            async with CloudScraperSession() as session:
                 response = await session.post(
                     url,
                     headers=headers,
@@ -1126,7 +1125,7 @@ class SoraClient:
         if not multipart:
             headers["Content-Type"] = "application/json"
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             url = f"{self.base_url}{endpoint}"
 
             kwargs = {
@@ -1142,7 +1141,7 @@ class SoraClient:
                 kwargs["json"] = json_data
 
             if multipart:
-                kwargs["multipart"] = multipart
+                kwargs.update(multipart)
 
             # Log request
             debug_logger.log_request(
@@ -1232,11 +1231,7 @@ class SoraClient:
         filename: str = "image.png",
         token_id: Optional[int] = None
     ) -> str:
-        """Upload image and return media_id
-
-        使用 CurlMime 对象上传文件（curl_cffi 的正确方式）
-        参考：https://curl-cffi.readthedocs.io/en/latest/quick_start.html#uploads
-        """
+        """Upload image and return media_id."""
         # 检测图片类型
         mime_type = "image/png"
         if filename.lower().endswith('.jpg') or filename.lower().endswith('.jpeg'):
@@ -1244,22 +1239,14 @@ class SoraClient:
         elif filename.lower().endswith('.webp'):
             mime_type = "image/webp"
 
-        # 创建 CurlMime 对象
-        mp = CurlMime()
-
-        # 添加文件部分
-        mp.addpart(
-            name="file",
-            content_type=mime_type,
-            filename=filename,
-            data=image_data
-        )
-
-        # 添加文件名字段
-        mp.addpart(
-            name="file_name",
-            data=filename.encode('utf-8')
-        )
+        mp = {
+            "files": {
+                "file": (filename, image_data, mime_type),
+            },
+            "data": {
+                "file_name": filename,
+            },
+        }
 
         result = await self._make_request(
             "POST",
@@ -1497,7 +1484,7 @@ class SoraClient:
             "Authorization": f"Bearer {token}"
         }
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             url = f"{self.base_url}/project_y/post/{post_id}"
 
             kwargs = {
@@ -1585,7 +1572,7 @@ class SoraClient:
             kwargs["proxy"] = proxy_url
 
         try:
-            async with AsyncSession() as session:
+            async with CloudScraperSession() as session:
                 # Record start time
                 start_time = time.time()
 
@@ -1658,17 +1645,14 @@ class SoraClient:
         Returns:
             cameo_id
         """
-        mp = CurlMime()
-        mp.addpart(
-            name="file",
-            content_type="video/mp4",
-            filename="video.mp4",
-            data=video_data
-        )
-        mp.addpart(
-            name="timestamps",
-            data=b"0,3"
-        )
+        mp = {
+            "files": {
+                "file": ("video.mp4", video_data, "video/mp4"),
+            },
+            "data": {
+                "timestamps": "0,3",
+            },
+        }
 
         result = await self._make_request("POST", "/characters/upload", token, multipart=mp)
         return result.get("id")
@@ -1731,7 +1715,7 @@ class SoraClient:
         if proxy_url:
             kwargs["proxy"] = proxy_url
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             response = await session.get(image_url, **kwargs)
             if response.status_code != 200:
                 raise Exception(f"Failed to download image: {response.status_code}")
@@ -1796,17 +1780,14 @@ class SoraClient:
         Returns:
             asset_pointer
         """
-        mp = CurlMime()
-        mp.addpart(
-            name="file",
-            content_type="image/webp",
-            filename="profile.webp",
-            data=image_data
-        )
-        mp.addpart(
-            name="use_case",
-            data=b"profile"
-        )
+        mp = {
+            "files": {
+                "file": ("profile.webp", image_data, "image/webp"),
+            },
+            "data": {
+                "use_case": "profile",
+            },
+        }
 
         result = await self._make_request(
             "POST",
@@ -1834,7 +1815,7 @@ class SoraClient:
             "Authorization": f"Bearer {token}"
         }
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             url = f"{self.base_url}/project_y/characters/{character_id}"
 
             kwargs = {

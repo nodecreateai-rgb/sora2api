@@ -6,9 +6,9 @@ import time
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
-from curl_cffi.requests import AsyncSession
 from ..core.config import config
 from ..core.logger import debug_logger
+from .cloudscraper_session import CloudScraperSession
 
 
 class FileCache:
@@ -155,7 +155,7 @@ class FileCache:
                 proxy_url = await self.proxy_manager.get_proxy_url(token_id)
 
             # Download with proxy support
-            async with AsyncSession() as session:
+            async with CloudScraperSession() as session:
                 kwargs = {"timeout": 60, "impersonate": "chrome"}
                 if proxy_url:
                     kwargs["proxy"] = proxy_url
@@ -214,4 +214,3 @@ class FileCache:
                 response_text=""
             )
             raise
-

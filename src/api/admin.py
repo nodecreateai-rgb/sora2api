@@ -988,7 +988,7 @@ async def test_proxy_config(
     token: str = Depends(verify_admin_token)
 ) -> dict:
     """Test proxy connectivity with custom URL"""
-    from curl_cffi.requests import AsyncSession
+    from src.services.cloudscraper_session import CloudScraperSession
 
     config_obj = await proxy_manager.get_proxy_config()
     if not config_obj.proxy_enabled or not config_obj.proxy_url:
@@ -998,7 +998,7 @@ async def test_proxy_config(
     test_url = request.test_url or "https://sora.chatgpt.com"
 
     try:
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             response = await session.get(
                 test_url,
                 timeout=15,

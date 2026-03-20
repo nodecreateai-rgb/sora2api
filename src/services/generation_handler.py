@@ -419,7 +419,7 @@ class GenerationHandler:
         Returns:
             File bytes
         """
-        from curl_cffi.requests import AsyncSession
+        from .cloudscraper_session import CloudScraperSession
 
         proxy_url = await self.load_balancer.proxy_manager.get_proxy_url()
 
@@ -431,7 +431,7 @@ class GenerationHandler:
         if proxy_url:
             kwargs["proxy"] = proxy_url
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             response = await session.get(url, **kwargs)
             if response.status_code != 200:
                 raise Exception(f"Failed to download file: {response.status_code}")

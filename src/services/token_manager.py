@@ -4,12 +4,12 @@ import asyncio
 import random
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from curl_cffi.requests import AsyncSession
 from faker import Faker
 from ..core.database import Database
 from ..core.models import Token, TokenStats
 from ..core.config import config
 from .proxy_manager import ProxyManager
+from .cloudscraper_session import CloudScraperSession
 from ..core.logger import debug_logger
 
 class TokenManager:
@@ -63,7 +63,7 @@ class TokenManager:
         """Get user info from Sora API"""
         proxy_url = await self.proxy_manager.get_proxy_url(token_id, proxy_url)
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
@@ -116,7 +116,7 @@ class TokenManager:
             "Authorization": f"Bearer {token}"
         }
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             url = "https://sora.chatgpt.com/backend/billing/subscriptions"
             print(f"📡 请求 URL: {url}")
             print(f"🔑 使用 Token: {token[:30]}...")
@@ -178,7 +178,7 @@ class TokenManager:
 
         print(f"🔍 开始获取Sora2邀请码...")
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json"
@@ -286,7 +286,7 @@ class TokenManager:
 
         print(f"🔍 开始获取Sora2剩余次数...")
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
@@ -344,7 +344,7 @@ class TokenManager:
 
         print(f"🔍 检查用户名是否可用: {username}")
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json"
@@ -392,7 +392,7 @@ class TokenManager:
 
         print(f"🔍 开始设置用户名: {username}")
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json"
@@ -433,7 +433,7 @@ class TokenManager:
         print(f"🔍 开始激活Sora2邀请码: {invite_code}")
         print(f"🔑 Access Token 前缀: {access_token[:50]}...")
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             # 生成设备ID
             device_id = str(uuid.uuid4())
 
@@ -481,7 +481,7 @@ class TokenManager:
         debug_logger.log_info(f"[ST_TO_AT] 开始转换 Session Token 为 Access Token...")
         proxy_url = await self.proxy_manager.get_proxy_url(proxy_url=proxy_url)
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Cookie": f"__Secure-next-auth.session-token={session_token}",
                 "Accept": "application/json",
@@ -571,7 +571,7 @@ class TokenManager:
         debug_logger.log_info(f"[RT_TO_AT] 使用 Client ID: {effective_client_id[:20]}...")
         proxy_url = await self.proxy_manager.get_proxy_url(proxy_url=proxy_url)
 
-        async with AsyncSession() as session:
+        async with CloudScraperSession() as session:
             headers = {
                 "Accept": "application/json",
                 "Content-Type": "application/json"
