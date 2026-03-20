@@ -11,8 +11,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple, List
 from uuid import uuid4
-from urllib.request import Request, urlopen, build_opener, ProxyHandler
-from urllib.error import HTTPError, URLError
+import cloudscraper
+from requests import RequestException
 from curl_cffi.requests import AsyncSession
 from curl_cffi import CurlMime
 from .proxy_manager import ProxyManager
@@ -634,25 +634,24 @@ class SoraClient:
 
     @staticmethod
     def _post_json_sync(url: str, headers: dict, payload: dict, timeout: int, proxy: Optional[str]) -> Dict[str, Any]:
-        data = json.dumps(payload).encode("utf-8")
-        req = Request(url, data=data, headers=headers, method="POST")
-
+        proxies = {"http": proxy, "https": proxy} if proxy else None
         try:
-            if proxy:
-                opener = build_opener(ProxyHandler({"http": proxy, "https": proxy}))
-                resp = opener.open(req, timeout=timeout)
-            else:
-                resp = urlopen(req, timeout=timeout)
-
-            resp_text = resp.read().decode("utf-8")
-            if resp.status not in (200, 201):
-                raise Exception(f"Request failed: {resp.status} {resp_text}")
-            return json.loads(resp_text)
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="ignore")
-            raise Exception(f"HTTP Error: {exc.code} {body}") from exc
-        except URLError as exc:
-            raise Exception(f"URL Error: {exc}") from exc
+            scraper = cloudscraper.create_scraper()
+            response = scraper.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+                proxies=proxies,
+            )
+            if response.status_code not in (200, 201):
+                raise Exception(f"Request failed: {response.status_code} {response.text}")
+            return response.json()
+        except RequestException as exc:
+            response = getattr(exc, "response", None)
+            if response is not None:
+                raise Exception(f"HTTP Error: {response.status_code} {response.text}") from exc
+            raise Exception(f"Request Error: {exc}") from exc
 
     async def _get_sentinel_token_via_browser(self, proxy_url: Optional[str] = None) -> Optional[str]:
         if not PLAYWRIGHT_AVAILABLE:
@@ -881,25 +880,24 @@ class SoraClient:
 
     @staticmethod
     def _post_text_sync(url: str, headers: dict, body: str, timeout: int, proxy: Optional[str]) -> Dict[str, Any]:
-        data = body.encode("utf-8")
-        req = Request(url, data=data, headers=headers, method="POST")
-
+        proxies = {"http": proxy, "https": proxy} if proxy else None
         try:
-            if proxy:
-                opener = build_opener(ProxyHandler({"http": proxy, "https": proxy}))
-                resp = opener.open(req, timeout=timeout)
-            else:
-                resp = urlopen(req, timeout=timeout)
-
-            resp_text = resp.read().decode("utf-8")
-            if resp.status not in (200, 201):
-                raise Exception(f"Request failed: {resp.status} {resp_text}")
-            return json.loads(resp_text)
-        except HTTPError as exc:
-            body_text = exc.read().decode("utf-8", errors="ignore")
-            raise Exception(f"HTTP Error: {exc.code} {body_text}") from exc
-        except URLError as exc:
-            raise Exception(f"URL Error: {exc}") from exc
+            scraper = cloudscraper.create_scraper()
+            response = scraper.post(
+                url,
+                headers=headers,
+                data=body.encode("utf-8"),
+                timeout=timeout,
+                proxies=proxies,
+            )
+            if response.status_code not in (200, 201):
+                raise Exception(f"Request failed: {response.status_code} {response.text}")
+            return response.json()
+        except RequestException as exc:
+            response = getattr(exc, "response", None)
+            if response is not None:
+                raise Exception(f"HTTP Error: {response.status_code} {response.text}") from exc
+            raise Exception(f"Request Error: {exc}") from exc
 
     async def _generate_sentinel_token(
         self,
